@@ -1,0 +1,26 @@
+*
+# source files
+!LIB
+!LIB/**
+!WRK
+!WRK/**
+!BIN
+!BIN/**
+!*.cpp
+!*.c
+!*.h
+!*.hpp
+# build system
+!CMakeLists.txt
+!LICENSE
+!README.md
+!VERSION
+# dependencies files
+!*.def
+!*.dat
+!*.lst
+# makefiles
+!*Makefile.*
+!*.pdb
+!*.inp.pdb
+!*.clef.pdb
