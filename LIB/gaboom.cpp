@@ -6,6 +6,10 @@
 #include <functional>
 #include <cstdint>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 // in milliseconds
 # define SLEEP 25
 
@@ -833,6 +837,12 @@ void calculate_fitness(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* chr
 	//float tot=0.0;
 	double share,rmsp;
 
+	// OpenMP-parallelised chromosome evaluation: each thread gets its own
+	// copy of the mutable scoring state via firstprivate on the VC context.
+	#ifdef _OPENMP
+	#pragma omp parallel for schedule(dynamic) default(none) \
+		shared(chrom, pop_size, FA, GB, VC, gene_lim, atoms, residue, cleftgrid, target)
+	#endif
 	for(i=0;i<pop_size;i++){
 		if(chrom[i].status != 'n'){
 			chrom[i].cf=eval_chromosome(FA,GB,VC,gene_lim,atoms,residue,cleftgrid,chrom[i].genes,target);
@@ -1139,7 +1149,11 @@ void populate_chromosomes(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* 
 
 	//------------------------------------------------------------------------------
 
-	// calculate evalue for each chromosome
+	// calculate evalue for each chromosome (OpenMP-parallel)
+	#ifdef _OPENMP
+	#pragma omp parallel for schedule(dynamic) default(none) \
+		shared(chrom, FA, GB, VC, gene_lim, atoms, residue, cleftgrid, target, popoffset)
+	#endif
 	for(i=popoffset;i<GB->num_chrom;i++){
 		chrom[i].cf=eval_chromosome(FA,GB,VC,gene_lim,atoms,residue,cleftgrid,chrom[i].genes,target);
 		chrom[i].evalue=get_cf_evalue(&chrom[i].cf);

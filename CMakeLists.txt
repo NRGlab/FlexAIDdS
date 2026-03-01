@@ -4,13 +4,34 @@
 # On Windows you can get boost by downloading the zip from the official website (install binaries) and running the executable
 # If it is not detected automatically you can use something like -DBoost_DIR=C:\boost_1_86_0\stage\lib\cmake\Boost-1.86.0 or C:\boost_1_82_0\lib64-msvc-14.3\cmake\Boost-1.82.0 in the cmake command
 
-cmake_minimum_required(VERSION 3.10)
-project(FlexAID)
-set(CMAKE_CXX_STANDARD 14)
+cmake_minimum_required(VERSION 3.18)
+project(FlexAID LANGUAGES CXX)
+
+# ─── C++20 ────────────────────────────────────────────────────────────────────
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
+
 if(POLICY CMP0167)
     cmake_policy(SET CMP0167 NEW)
 endif()
+
+# ─── options ──────────────────────────────────────────────────────────────────
+option(FLEXAIDS_USE_CUDA   "Enable CUDA GPU evaluation"          OFF)
+option(FLEXAIDS_USE_AVX2   "Enable AVX2 SIMD acceleration"       ON)
+option(FLEXAIDS_USE_OPENMP "Enable OpenMP thread parallelism"    ON)
+
+# ─── OpenMP ───────────────────────────────────────────────────────────────────
+if(FLEXAIDS_USE_OPENMP)
+    find_package(OpenMP)
+endif()
+
+# ─── CUDA (optional) ─────────────────────────────────────────────────────────
+if(FLEXAIDS_USE_CUDA)
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+endif()
+
+# ─── executable ───────────────────────────────────────────────────────────────
 add_executable(FlexAID "")
 target_sources(FlexAID PRIVATE
         LIB/top.cpp
@@ -81,12 +102,37 @@ target_sources(FlexAID PRIVATE
         LIB/partition_grid.cpp
         LIB/generate_grid.cpp
         LIB/maps.cpp
+        # ── new C++20 modules ──
+        LIB/tencm.cpp
+        LIB/statmech.cpp
 )
 
 target_include_directories(FlexAID PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
 
+# ─── compiler flags ──────────────────────────────────────────────────────────
 if(MSVC)
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS} /W4 /O2 /MT")
+    target_compile_options(FlexAID PRIVATE /W4 /O2 /MT)
+    if(FLEXAIDS_USE_AVX2)
+        target_compile_options(FlexAID PRIVATE /arch:AVX2)
+    endif()
 else()
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS} -Wall -O3")
+    target_compile_options(FlexAID PRIVATE -Wall -O3)
+    if(FLEXAIDS_USE_AVX2)
+        target_compile_options(FlexAID PRIVATE -mavx2 -mfma)
+    endif()
+endif()
+
+# ─── OpenMP link ──────────────────────────────────────────────────────────────
+if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+    target_link_libraries(FlexAID PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+# ─── CUDA sources ─────────────────────────────────────────────────────────────
+if(FLEXAIDS_USE_CUDA)
+    target_sources(FlexAID PRIVATE LIB/cuda_eval.cu)
+    target_compile_definitions(FlexAID PRIVATE FLEXAIDS_USE_CUDA)
+    set_target_properties(FlexAID PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_STANDARD 17)
+    target_link_libraries(FlexAID PRIVATE CUDA::cudart)
 endif()
