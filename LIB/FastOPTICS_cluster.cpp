@@ -2,8 +2,10 @@
 
 void FastOPTICS_cluster(FA_Global* FA, GB_Global* GB, VC_Global* VC, chromosome* chrom, genlim* gene_lim, atom* atoms, resid* residue, gridpoint* cleftgrid, int nChrom, char* end_strfile, char* tmp_end_strfile, char* dockinp, char* gainp)
 {
-    int minPoints = 10;
-    // (minPoints < 3*FA->num_het_atm) ? minPoints = minPoints : minPoints = 3*FA->num_het_atm;
+    // Base neighbourhood size: at least 5, scales with snapshot population.
+    // A value of ~nChrom/20 gives a 5 % neighbourhood, consistent with
+    // typical OPTICS minPts heuristics for molecular-docking pose sets.
+    int minPoints = std::max(5, nChrom / 20);
 	
     // BindingPopulation() : BindingPopulation constructor *non-overridable*
     BindingPopulation::BindingPopulation Population1(FA,GB,VC,chrom,gene_lim,atoms,residue,cleftgrid,nChrom);

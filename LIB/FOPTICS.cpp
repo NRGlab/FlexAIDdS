@@ -177,11 +177,16 @@ void FastOPTICS::Execute_FastOPTICS(char* end_strfile, char* tmp_end_strfile)
 	// OPTICS extraction rule: a point with reachDist > epsilon (or UNDEFINED) marks the
 	// start of a new cluster.  Finalize the current cluster first, then begin the new
 	// cluster with that point.  After the loop, flush the last cluster.
+	//
+	// Unit conversion: reachDist is Euclidean distance in 3D Cartesian space
+	// (nDimensions = num_het_atm * 3), while cluster_rmsd is in RMSD units.
+	// Relationship: euclidean_dist = RMSD * sqrt(num_het_atm)
+	const float epsilon = this->FA->cluster_rmsd * sqrtf(static_cast<float>(this->FA->num_het_atm));
 	BindingMode::BindingMode Current(this->Population);
 	for(std::vector< Pose >::iterator it = this->OPTICS.begin(); it != this->OPTICS.end(); ++it)
 	{
 		bool isNewClusterStart = isUndefinedDist(it->reachDist) ||
-		                         it->reachDist > this->FA->cluster_rmsd*(1 + RandomProjectedNeighborsAndDensities::sizeTolerance);
+		                         it->reachDist > epsilon * (1 + RandomProjectedNeighborsAndDensities::sizeTolerance);
 
 		if(isNewClusterStart)
 		{
