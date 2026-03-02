@@ -41,11 +41,6 @@ ClusterOrdering::ClusterOrdering(int id, int predID, float reach) : objectID(id)
 
 inline bool const ClusterOrdering::operator==(const ClusterOrdering& rhs)
 {
-	if(*this == rhs)
-		return true;
-	if(typeid(rhs) != typeid(ClusterOrdering))
-		return false;
-
 	return ( this->objectID == rhs.objectID );
 }
 
@@ -163,38 +158,46 @@ void FastOPTICS::Execute_FastOPTICS(char* end_strfile, char* tmp_end_strfile)
     MultiPartition.output_projected_distance(end_strfile, tmp_end_strfile);
 
 	// Order chromosome and their reachDist in OPTICS
-    //  points pairs contain :
-    //   first  -> pair<chromosome*, index>
-    //   second -> float reachDist
-	for(int i = 0; i < this->N; ++i)
+    //  order[pos] = point index at OPTICS position pos
+    //  reachDist[pt] = reachability distance of point pt
+	for(int pos = 0; pos < this->N; ++pos)
 	{
-		if( (this->points[i]).first != NULL && (this->points[i].first)->app_evalue < 0 )
+		int pt = this->order[pos];
+		if(pt < 0) continue; // unprocessed point slot
+		if( (this->points[pt]).first != NULL && (this->points[pt].first)->app_evalue < 0 )
 		{
-			// Calling Pose constructor for the current chromosome
-			Pose::Pose Pose((this->points[i]).first, i, this->order[i], this->reachDist[i], this->Population->Temperature, (this->points[i]).second);
-			// OPTICS.push(Pose);
+			// Calling Pose constructor: Pose holds the point's chromosome at the correct OPTICS position
+			Pose::Pose Pose((this->points[pt]).first, pt, pos, this->reachDist[pt], this->Population->Temperature, (this->points[pt]).second);
             this->OPTICS.push_back(Pose);
 		}
 	}
     std::sort(this->OPTICS.begin(), this->OPTICS.end(), PoseClassifier::PoseClassifier());
 
 	// Build BindingModes (aggregation of Poses in BindingModes)
-    int i = 0; // used to have an idea of the number of loop completed (iterators are less convenient for that information while debugging)
- 	BindingMode::BindingMode Current(this->Population);
-	for(std::vector< Pose >::iterator it = this->OPTICS.begin(); it != this->OPTICS.end(); ++i, ++it)
+	// OPTICS extraction rule: a point with reachDist > epsilon (or UNDEFINED) marks the
+	// start of a new cluster.  Finalize the current cluster first, then begin the new
+	// cluster with that point.  After the loop, flush the last cluster.
+	BindingMode::BindingMode Current(this->Population);
+	for(std::vector< Pose >::iterator it = this->OPTICS.begin(); it != this->OPTICS.end(); ++it)
 	{
+		bool isNewClusterStart = isUndefinedDist(it->reachDist) ||
+		                         it->reachDist > this->FA->cluster_rmsd*(1 + RandomProjectedNeighborsAndDensities::sizeTolerance);
 
-        if(isUndefinedDist(it->reachDist) && it->order == 0) { Current.add_Pose(*it); }
-        else if(it->reachDist <= this->FA->cluster_rmsd*(1 + RandomProjectedNeighborsAndDensities::sizeTolerance)) { Current.add_Pose(*it); }
-
-       	if(it->reachDist > this->FA->cluster_rmsd*(1 + RandomProjectedNeighborsAndDensities::sizeTolerance) || isUndefinedDist(it->reachDist))
-        {
+		if(isNewClusterStart)
+		{
 			if(Current.get_BindingMode_size() >= this->minPoints)
 			{
 				this->Population->add_BindingMode(Current);
-                Current.clear_Poses();
-            }
-        }
+			}
+			Current.clear_Poses();
+		}
+
+		Current.add_Pose(*it);
+	}
+	// Flush the last cluster
+	if(Current.get_BindingMode_size() >= this->minPoints)
+	{
+		this->Population->add_BindingMode(Current);
 	}
 }
 
@@ -500,10 +503,6 @@ void FastOPTICS::ExpandClusterOrder(int ipt)
 			tmp = ClusterOrdering::ClusterOrdering(iNeigh, currPt, nrdist);
 			queue.push(tmp);
 		}
-        std::make_heap(const_cast<ClusterOrdering*>(&queue.top()),
-                       const_cast<ClusterOrdering*>(&queue.top() + queue.size()),
-                       ClusterOrderingComparator::ClusterOrderingComparator()
-                       );
 	}
 }
 
@@ -729,10 +728,10 @@ void RandomProjectedNeighborsAndDensities::getInverseDensities(std::vector< floa
         int len = pinSet.size();
 		int indoff = static_cast<int>(round(len/2));
 		int oldind = pinSet[indoff];
-		for(int i = 0; i < len; ++i)
+		for(int j = 0; j < len; ++j)
 		{
-			int ind = pinSet[i];
-			if(ind == indoff) continue;
+			int ind = pinSet[j];
+			if(ind == oldind) continue;
 
 			float dist = this->top->compute_distance(this->points[ind],this->points[oldind]);
 			inverseDensities[oldind] += dist;
@@ -790,7 +789,7 @@ void RandomProjectedNeighborsAndDensities::getNeighbors(std::vector< std::vector
 			// if(itPos == cneighs2.end()) // element not found in cneighs2
 			if( !std::binary_search(cneighs2.begin(), cneighs2.end(), ind) )
 			{
-				cneighs2.push_back(oldind);
+				cneighs2.push_back(ind);
 				std::sort(cneighs2.begin(),cneighs2.end());
 				cneighs2.erase(std::unique(cneighs2.begin(), cneighs2.end()), cneighs2.end());
 			}
@@ -1031,6 +1030,5 @@ int roll_die()
 }
 int roll_rand_die()
 {
-	int n;
-	return rand()%n;
+	return rand();
 }
