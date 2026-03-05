@@ -17,6 +17,7 @@ endif()
 
 # ─── options ──────────────────────────────────────────────────────────────────
 option(FLEXAIDS_USE_CUDA   "Enable CUDA GPU evaluation"          OFF)
+option(FLEXAIDS_USE_METAL  "Enable Metal GPU acceleration"       OFF)
 option(FLEXAIDS_USE_AVX2   "Enable AVX2 SIMD acceleration"       ON)
 option(FLEXAIDS_USE_OPENMP "Enable OpenMP thread parallelism"    ON)
 
@@ -29,6 +30,21 @@ endif()
 if(FLEXAIDS_USE_CUDA)
     enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)
+endif()
+
+# ─── Metal (optional, macOS only) ────────────────────────────────────────────
+if(FLEXAIDS_USE_METAL)
+    if(NOT APPLE)
+        message(FATAL_ERROR "Metal acceleration is only supported on macOS")
+    endif()
+    find_library(METAL_LIBRARY Metal REQUIRED)
+    find_library(FOUNDATION_LIBRARY Foundation REQUIRED)
+    find_library(METALKIT_LIBRARY MetalKit REQUIRED)
+    message(STATUS "Metal acceleration enabled")
+else()
+    if(APPLE)
+        message(STATUS "Metal acceleration available but disabled (use -DFLEXAIDS_USE_METAL=ON)")
+    endif()
 endif()
 
 # ─── executable ───────────────────────────────────────────────────────────────
@@ -102,7 +118,7 @@ target_sources(FlexAID PRIVATE
         LIB/partition_grid.cpp
         LIB/generate_grid.cpp
         LIB/maps.cpp
-        # ── new C++20 modules ──
+        # ── new C++20 modules ���─
         LIB/tencm.cpp
         LIB/statmech.cpp
 )
@@ -135,4 +151,20 @@ if(FLEXAIDS_USE_CUDA)
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_STANDARD 17)
     target_link_libraries(FlexAID PRIVATE CUDA::cudart)
+endif()
+
+# ─── Metal sources ────────────────────────────────────────────────────────────
+if(FLEXAIDS_USE_METAL)
+    target_sources(FlexAID PRIVATE LIB/metal_eval.mm)
+    target_compile_definitions(FlexAID PRIVATE FLEXAIDS_USE_METAL)
+    target_compile_options(FlexAID PRIVATE -fno-objc-arc)
+    target_link_libraries(FlexAID PRIVATE
+        ${METAL_LIBRARY}
+        ${FOUNDATION_LIBRARY}
+        ${METALKIT_LIBRARY}
+    )
+    set_source_files_properties(LIB/metal_eval.mm PROPERTIES
+        LANGUAGE OBJCXX
+        COMPILE_FLAGS "-std=c++20 -fno-objc-arc"
+    )
 endif()
