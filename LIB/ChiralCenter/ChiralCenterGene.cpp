@@ -1,7 +1,15 @@
 // ChiralCenterGene.cpp — chiral stereocenter gene implementation
+// Eigen is used for 3D vector arithmetic in invert_center() (proper reflection
+// through a plane spanned by three substituent vectors).
 #include "ChiralCenterGene.h"
 
 #include "../flexaid.h"
+
+#ifdef FLEXAIDS_HAS_EIGEN
+#  include <Eigen/Dense>
+#  include <Eigen/Geometry>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -119,31 +127,49 @@ void ChiralCenterGene::apply(atom* atoms) const {
 }
 
 void ChiralCenterGene::invert_center(atom* atoms, int cidx) const {
-    // Find the ChiralCenter for cidx
     for (const auto& c : centers_) {
         if (c.central_atom_idx != cidx) continue;
-        // Swap the x-coordinates of substituents 0 and 1 relative to center
-        // to perform a tetrahedral inversion (reflection through a plane).
         int s0 = c.substituent_indices[0];
         int s1 = c.substituent_indices[1];
-        if (s0 < 0 || s1 < 0) return;
+        int s2 = c.substituent_indices[2];
+        if (s0 < 0 || s1 < 0 || s2 < 0) return;
 
-        // Translate to origin (centered on chiral atom)
-        float cx = atoms[cidx].coor[0];
-        float cy = atoms[cidx].coor[1];
-        float cz = atoms[cidx].coor[2];
+#ifdef FLEXAIDS_HAS_EIGEN
+        // Proper tetrahedral inversion via Eigen:
+        // Reflect substituent s0 through the plane spanned by (s1,s2) relative
+        // to the chiral center. This is an exact R↔S inversion.
+        using Vec3 = Eigen::Vector3f;
 
-        // Reflect substituent 0 through the plane defined by s1,s2,s3
-        // Simplified: swap x-components of s0 and s1 relative to center
-        float dx0 = atoms[s0].coor[0] - cx;
-        float dx1 = atoms[s1].coor[0] - cx;
-        atoms[s0].coor[0] = cx + dx1;
-        atoms[s1].coor[0] = cx + dx0;
-        // Also swap y-components for a proper reflection
-        float dy0 = atoms[s0].coor[1] - cy;
-        float dy1 = atoms[s1].coor[1] - cy;
-        atoms[s0].coor[1] = cy + dy1;
-        atoms[s1].coor[1] = cy + dy0;
+        Vec3 origin(atoms[cidx].coor[0], atoms[cidx].coor[1], atoms[cidx].coor[2]);
+        Vec3 v0(atoms[s0].coor[0] - origin[0],
+                atoms[s0].coor[1] - origin[1],
+                atoms[s0].coor[2] - origin[2]);
+        Vec3 v1(atoms[s1].coor[0] - origin[0],
+                atoms[s1].coor[1] - origin[1],
+                atoms[s1].coor[2] - origin[2]);
+        Vec3 v2(atoms[s2].coor[0] - origin[0],
+                atoms[s2].coor[1] - origin[1],
+                atoms[s2].coor[2] - origin[2]);
+
+        // Plane normal = v1 × v2 (normalised)
+        Vec3 normal = v1.cross(v2);
+        float norm  = normal.norm();
+        if (norm < 1e-6f) return;
+        normal /= norm;
+
+        // Householder reflection: v0' = v0 - 2(v0·n)n
+        Vec3 v0_reflected = v0 - 2.0f * v0.dot(normal) * normal;
+        atoms[s0].coor[0] = origin[0] + v0_reflected[0];
+        atoms[s0].coor[1] = origin[1] + v0_reflected[1];
+        atoms[s0].coor[2] = origin[2] + v0_reflected[2];
+#else
+        // Scalar fallback: swap x/y of s0 and s1 relative to center
+        float cx = atoms[cidx].coor[0], cy = atoms[cidx].coor[1];
+        float dx0 = atoms[s0].coor[0] - cx, dx1 = atoms[s1].coor[0] - cx;
+        float dy0 = atoms[s0].coor[1] - cy, dy1 = atoms[s1].coor[1] - cy;
+        atoms[s0].coor[0] = cx + dx1;  atoms[s1].coor[0] = cx + dx0;
+        atoms[s0].coor[1] = cy + dy1;  atoms[s1].coor[1] = cy + dy0;
+#endif
         return;
     }
 }

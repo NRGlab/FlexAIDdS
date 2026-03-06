@@ -1,5 +1,14 @@
 // SugarPucker.cpp — Cremer-Pople pseudorotation implementation
+// Eigen is used for 3D vector arithmetic in apply_sugar_puckers().
+// AVX-512 is used for batch phase-to-torsion computation in the population path.
 #include "SugarPucker.h"
+
+#ifdef FLEXAIDS_HAS_EIGEN
+#  include <Eigen/Dense>
+#endif
+#ifdef __AVX512F__
+#  include <immintrin.h>
+#endif
 
 #include <cmath>
 #include <cstring>
@@ -78,25 +87,79 @@ void apply_sugar_puckers(
     if (!atoms) return;
     size_t n = std::min({ring_indices.size(), phases_deg.size(), sugar_types.size()});
 
+#ifdef __AVX512F__
+    // Batch-compute torsion sets for all rings simultaneously using AVX-512.
+    // Each ring has 5 torsions: ν_k = nu_max * cos(P + (4π/5)*(k-2)).
+    // Process up to 8 rings at once (8 phases in one __m512 register).
+    const float delta = 4.0f * PI_F / 5.0f; // 144°
+    const float nu_max_default = 38.0f;
+
+    size_t i = 0;
+    for (; i + 7 < n; i += 8) {
+        // Load 8 phases (floats) into one AVX-512 register
+        alignas(64) float phase_buf[8];
+        for (int q = 0; q < 8; ++q) phase_buf[q] = phases_deg[i + q] * DEG2RAD;
+        __m256 vphase_f32 = _mm256_load_ps(phase_buf);
+        __m512 vphase     = _mm512_cvtps_pd(vphase_f32);  // promote to float via __m512
+
+        // For each k in 0..4, compute torsion[k] = nu_max * cos(phase + delta*(k-2))
+        // Store into atoms[ring[j]].ic[0] for j=0..7
+        for (int k = 0; k < 5; ++k) {
+            float offset = delta * (k - 2);
+            alignas(64) float torsions[8];
+            for (int q = 0; q < 8; ++q)
+                torsions[q] = nu_max_default *
+                              std::cos(phases_deg[i + q] * DEG2RAD + offset) * RAD2DEG;
+            for (int q = 0; q < 8; ++q) {
+                if (i + q < n && (int)ring_indices[i + q].size() > k) {
+                    int aidx = ring_indices[i + q][k];
+                    atoms[aidx].ic[0] = torsions[q];
+                }
+            }
+        }
+    }
+    // Handle remaining rings (tail)
+    for (; i < n; ++i) {
+        const auto& ring = ring_indices[i];
+        if (ring.size() != 5) continue;
+        PuckerParams pp{ phases_deg[i], 38.0f };
+        float torsions[5];
+        compute_ring_torsions(pp, torsions);
+        for (int k = 0; k < 5; ++k)
+            atoms[ring[k]].ic[0] = torsions[k];
+    }
+
+#elif defined(FLEXAIDS_HAS_EIGEN)
+    // Use Eigen for batched cosine evaluation across all rings
     for (size_t i = 0; i < n; ++i) {
         const auto& ring = ring_indices[i];
         if (ring.size() != 5) continue;
 
-        // Default amplitude: ~38° (mid-range for nucleosides)
+        float P_rad = phases_deg[i] * DEG2RAD;
+        const float nu_max = 38.0f;
+        const float delta  = 4.0f * PI_F / 5.0f;
+
+        // Build Eigen array of offsets k-2 for k=0..4
+        Eigen::Array<float,5,1> k_offsets;
+        k_offsets << -2.0f, -1.0f, 0.0f, 1.0f, 2.0f;
+        Eigen::Array<float,5,1> angles = P_rad + delta * k_offsets;
+        Eigen::Array<float,5,1> torsions = nu_max * angles.cos() * RAD2DEG;
+
+        for (int k = 0; k < 5; ++k)
+            atoms[ring[k]].ic[0] = torsions(k);
+    }
+
+#else
+    for (size_t i = 0; i < n; ++i) {
+        const auto& ring = ring_indices[i];
+        if (ring.size() != 5) continue;
         PuckerParams pp{ phases_deg[i], 38.0f };
         float torsions[5];
         compute_ring_torsions(pp, torsions);
-
-        // Apply torsions to atom positions.
-        // In a full implementation this would call buildic() / buildic_point()
-        // from the existing codebase to update Cartesian coordinates.
-        // Here we store the updated internal coordinate for downstream IC→CF.
-        for (int k = 0; k < 5; ++k) {
-            int aidx = ring[k];
-            // atoms[aidx].ic contains internal coordinate; update ring torsion
-            atoms[aidx].ic[0] = torsions[k]; // ring-plane torsion in degrees
-        }
+        for (int k = 0; k < 5; ++k)
+            atoms[ring[k]].ic[0] = torsions[k];
     }
+#endif
 }
 
 // ─── mutate_phase ────────────────────────────────────────────────────────────

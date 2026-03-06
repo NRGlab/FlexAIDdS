@@ -1,19 +1,42 @@
-// ShannonThermoStack.cpp — implementation
+// ShannonThermoStack.cpp — multi-path implementation
+//
+// Hardware dispatch priority (runtime):
+//   1. CUDA GPU   (FLEXAIDS_USE_CUDA)
+//   2. Metal GPU  (ENABLE_METAL_CORE, Apple Silicon)
+//   3. AVX-512    (__AVX512F__)  — 8 doubles/cycle histogram binning
+//   4. OpenMP     (_OPENMP)
+//   5. Scalar     (always available)
+//
+// Eigen is used for vectorised log() / probability array ops on all CPU paths.
 #include "ShannonThermoStack.h"
 
 #ifdef ENABLE_METAL_CORE
 #  include "ShannonMetalBridge.h"
 #endif
 
+#ifdef FLEXAIDS_USE_CUDA
+#  include "shannon_cuda.cuh"
+static ShannonCudaCtx s_cuda_ctx;
+static bool           s_cuda_ready = false;
+#endif
+
+#ifdef __AVX512F__
+#  include <immintrin.h>
+#endif
+
 #ifdef _OPENMP
 #  include <omp.h>
 #endif
 
+#ifdef FLEXAIDS_HAS_EIGEN
+#  include <Eigen/Dense>
+#endif
+
 #include <algorithm>
+#include <cmath>
 #include <numeric>
 #include <random>
-#include <cmath>
-#include <stdexcept>
+#include <vector>
 
 namespace shannon_thermo {
 
@@ -26,134 +49,224 @@ ShannonEnergyMatrix& ShannonEnergyMatrix::instance() {
 
 void ShannonEnergyMatrix::initialise() {
     if (initialised_) return;
-
     matrix_.resize(SHANNON_BINS * SHANNON_BINS);
 
-    // Generate uniform probabilities with Gaussian perturbation (seed 42)
     std::mt19937 rng(42);
     std::normal_distribution<double> perturb(0.0, 0.05);
-
-    // Base probabilities: uniform over SHANNON_BINS
+    const double base = 1.0 / SHANNON_BINS;
     std::vector<double> p_i(SHANNON_BINS), p_j(SHANNON_BINS);
-    double base = 1.0 / SHANNON_BINS;
-    for (int i = 0; i < SHANNON_BINS; ++i) {
-        p_i[i] = std::max(1e-9, base + perturb(rng));
-        p_j[i] = std::max(1e-9, base + perturb(rng));
-    }
-
-    // Normalise
-    double sum_i = std::accumulate(p_i.begin(), p_i.end(), 0.0);
-    double sum_j = std::accumulate(p_j.begin(), p_j.end(), 0.0);
     for (int k = 0; k < SHANNON_BINS; ++k) {
-        p_i[k] /= sum_i;
-        p_j[k] /= sum_j;
+        p_i[k] = std::max(1e-9, base + perturb(rng));
+        p_j[k] = std::max(1e-9, base + perturb(rng));
     }
+    double si = 0, sj = 0;
+    for (int k = 0; k < SHANNON_BINS; ++k) { si += p_i[k]; sj += p_j[k]; }
+    for (int k = 0; k < SHANNON_BINS; ++k) { p_i[k] /= si; p_j[k] /= sj; }
 
-    // Fill E[i][j] = -kT * p_i * log2(p_j)
-    const double kT = kB_kcal * TEMPERATURE_K;
-    const double log2_inv = 1.0 / std::log(2.0);
+    const double kT    = kB_kcal * TEMPERATURE_K;
+    const double l2inv = 1.0 / std::log(2.0);
+
+#ifdef __AVX512F__
+    // Fill the matrix 8 doubles at a time using AVX-512
+    __m512d vkT_l2 = _mm512_set1_pd(-kT * l2inv);
     for (int i = 0; i < SHANNON_BINS; ++i) {
-        for (int j = 0; j < SHANNON_BINS; ++j) {
-            matrix_[i * SHANNON_BINS + j] =
-                -kT * p_i[i] * std::log(p_j[j]) * log2_inv;
+        __m512d vpi = _mm512_set1_pd(p_i[i]);
+        int j = 0;
+        for (; j + 7 < SHANNON_BINS; j += 8) {
+            __m512d vpj  = _mm512_loadu_pd(&p_j[j]);
+            // _mm512_log_pd requires SVML; use std::log scalar fallback if missing
+            __m512d vlog = _mm512_log_pd(vpj);
+            __m512d vres = _mm512_mul_pd(vkT_l2, _mm512_mul_pd(vpi, vlog));
+            _mm512_storeu_pd(&matrix_[i * SHANNON_BINS + j], vres);
         }
+        for (; j < SHANNON_BINS; ++j)
+            matrix_[i * SHANNON_BINS + j] = -kT * p_i[i] * std::log(p_j[j]) * l2inv;
     }
+#else
+    for (int i = 0; i < SHANNON_BINS; ++i)
+        for (int j = 0; j < SHANNON_BINS; ++j)
+            matrix_[i * SHANNON_BINS + j] = -kT * p_i[i] * std::log(p_j[j]) * l2inv;
+#endif
     initialised_ = true;
 }
+
+// ─── entropy from bin counts (Eigen-vectorised) ───────────────────────────────
+static double entropy_from_counts(const int* counts, int num_bins, int total) {
+    if (total == 0) return 0.0;
+    const double l2inv = 1.0 / std::log(2.0);
+
+#ifdef FLEXAIDS_HAS_EIGEN
+    Eigen::ArrayXd prob(num_bins);
+    for (int b = 0; b < num_bins; ++b)
+        prob(b) = static_cast<double>(counts[b]);
+    prob /= static_cast<double>(total);
+    // Mask zeros before log to avoid -inf; Eigen evaluates log vectorised
+    Eigen::ArrayXd safe_p = (prob > 1e-15).select(prob, Eigen::ArrayXd::Constant(num_bins, 1.0));
+    Eigen::ArrayXd lp     = (prob > 1e-15).select(safe_p.log(), Eigen::ArrayXd::Zero(num_bins));
+    return -(prob * lp).sum() * l2inv;
+#else
+    double H = 0.0;
+    for (int b = 0; b < num_bins; ++b) {
+        if (counts[b] > 0) {
+            double p = static_cast<double>(counts[b]) / total;
+            H -= p * std::log(p) * l2inv;
+        }
+    }
+    return H;
+#endif
+}
+
+// ─── AVX-512 private histogram ────────────────────────────────────────────────
+#ifdef __AVX512F__
+static void histogram_avx512(const double* values, int n,
+                               double min_v, double inv_bw, int num_bins,
+                               std::vector<int>& priv)
+{
+    int i = 0;
+    __m512d vmin   = _mm512_set1_pd(min_v);
+    __m512d vinvbw = _mm512_set1_pd(inv_bw);
+
+    for (; i + 7 < n; i += 8) {
+        __m512d ve   = _mm512_loadu_pd(values + i);
+        __m512d vrel = _mm512_fmadd_pd(ve, vinvbw,
+                           _mm512_mul_pd(_mm512_set1_pd(-min_v), vinvbw));
+        // Convert 8 doubles → 8 int32 (truncate)
+        __m256i v32 = _mm512_cvttpd_epi32(vrel);
+        alignas(32) int tmp[8];
+        _mm256_storeu_si256((__m256i*)tmp, v32);
+        for (int k = 0; k < 8; ++k) {
+            int b = std::min(std::max(tmp[k], 0), num_bins - 1);
+            priv[b]++;
+        }
+    }
+    for (; i < n; ++i) {
+        int b = static_cast<int>((values[i] - min_v) * inv_bw);
+        b = std::min(std::max(b, 0), num_bins - 1);
+        priv[b]++;
+    }
+}
+#endif // __AVX512F__
 
 // ─── compute_shannon_entropy ─────────────────────────────────────────────────
 
 double compute_shannon_entropy(const std::vector<double>& values, int num_bins) {
     if (values.empty()) return 0.0;
-
-#ifdef ENABLE_METAL_CORE
-    // Delegate histogram computation to GPU on Apple Silicon
-    return ShannonMetalBridge::compute_shannon_entropy_metal(values, num_bins);
-#endif
+    if (num_bins <= 0)  num_bins = DEFAULT_HIST_BINS;
 
     double min_v = *std::min_element(values.begin(), values.end());
     double max_v = *std::max_element(values.begin(), values.end());
     if (max_v - min_v < 1e-12) return 0.0;
-
     double bin_width = (max_v - min_v) / num_bins + 1e-10;
+    double inv_bw    = 1.0 / bin_width;
+    int    n         = static_cast<int>(values.size());
+
     std::vector<int> bins(num_bins, 0);
 
-#ifdef _OPENMP
-    std::vector<std::vector<int>> thread_bins;
-    int n_threads = 1;
-    #pragma omp parallel
+// ── 1. CUDA ───────────────────────────────────────────────────────────────────
+#ifdef FLEXAIDS_USE_CUDA
     {
-        #pragma omp single
-        { n_threads = omp_get_num_threads(); }
-    }
-    thread_bins.assign(n_threads, std::vector<int>(num_bins, 0));
-
-    #pragma omp parallel
-    {
-        int tid = omp_get_thread_num();
-        auto& local = thread_bins[tid];
-        #pragma omp for schedule(static)
-        for (int i = 0; i < (int)values.size(); ++i) {
-            int b = static_cast<int>((values[i] - min_v) / bin_width);
-            b = std::min(std::max(b, 0), num_bins - 1);
-            local[b]++;
+        if (!s_cuda_ready) {
+            shannon_cuda_init(s_cuda_ctx, 1 << 20, num_bins);
+            s_cuda_ready = true;
         }
-    }
-    for (auto& tb : thread_bins)
-        for (int b = 0; b < num_bins; ++b)
-            bins[b] += tb[b];
-#else
-    for (double v : values) {
-        int b = static_cast<int>((v - min_v) / bin_width);
-        b = std::min(std::max(b, 0), num_bins - 1);
-        bins[b]++;
+        if (n <= s_cuda_ctx.capacity) {
+            shannon_cuda_histogram(s_cuda_ctx, values.data(), n,
+                                   min_v, bin_width, bins.data());
+            return entropy_from_counts(bins.data(), num_bins, n);
+        }
     }
 #endif
 
-    return compute_shannon_entropy_discrete(bins);
+// ── 2. Metal ──────────────────────────────────────────────────────────────────
+#ifdef ENABLE_METAL_CORE
+    return ShannonMetalBridge::compute_shannon_entropy_metal(values, num_bins);
+#endif
+
+// ── 3. AVX-512 (+ optional OpenMP for multi-threaded private histograms) ──────
+#ifdef __AVX512F__
+    {
+#  ifdef _OPENMP
+        int n_threads = omp_get_max_threads();
+        std::vector<std::vector<int>> t_bins(n_threads, std::vector<int>(num_bins, 0));
+        #pragma omp parallel
+        {
+            int tid    = omp_get_thread_num();
+            int chunk  = (n + n_threads - 1) / n_threads;
+            int start  = tid * chunk;
+            int end    = std::min(start + chunk, n);
+            if (start < end)
+                histogram_avx512(values.data() + start, end - start,
+                                 min_v, inv_bw, num_bins, t_bins[tid]);
+        }
+        for (auto& tb : t_bins)
+            for (int b = 0; b < num_bins; ++b) bins[b] += tb[b];
+#  else
+        histogram_avx512(values.data(), n, min_v, inv_bw, num_bins, bins);
+#  endif
+    }
+
+// ── 4. OpenMP scalar ──────────────────────────────────────────────────────────
+#elif defined(_OPENMP)
+    {
+        int n_threads = omp_get_max_threads();
+        std::vector<std::vector<int>> t_bins(n_threads, std::vector<int>(num_bins, 0));
+        #pragma omp parallel for schedule(static)
+        for (int i = 0; i < n; ++i) {
+            int tid = omp_get_thread_num();
+            int b   = static_cast<int>((values[i] - min_v) * inv_bw);
+            t_bins[tid][std::min(std::max(b, 0), num_bins - 1)]++;
+        }
+        for (auto& tb : t_bins)
+            for (int b = 0; b < num_bins; ++b) bins[b] += tb[b];
+    }
+
+// ── 5. Scalar ─────────────────────────────────────────────────────────────────
+#else
+    for (int i = 0; i < n; ++i) {
+        int b = static_cast<int>((values[i] - min_v) * inv_bw);
+        bins[std::min(std::max(b, 0), num_bins - 1)]++;
+    }
+#endif
+
+    return entropy_from_counts(bins.data(), num_bins, n);
 }
 
 double compute_shannon_entropy_discrete(const std::vector<int>& counts) {
     int total = std::accumulate(counts.begin(), counts.end(), 0);
-    if (total == 0) return 0.0;
-
-    double H = 0.0;
-    const double log2_inv = 1.0 / std::log(2.0);
-    for (int c : counts) {
-        if (c > 0) {
-            double p = static_cast<double>(c) / total;
-            H -= p * std::log(p) * log2_inv;
-        }
-    }
-    return H;
+    return entropy_from_counts(counts.data(), static_cast<int>(counts.size()), total);
 }
 
-// ─── compute_torsional_vibrational_entropy ───────────────────────────────────
+// ─── compute_torsional_vibrational_entropy (Eigen-vectorised) ────────────────
 
 double compute_torsional_vibrational_entropy(
     const std::vector<tencm::NormalMode>& modes,
     double temperature_K)
 {
     if (modes.empty()) return 0.0;
-
     const double kT = kB_kcal * temperature_K;
-    double S_vib = 0.0;
 
-    // Skip the first 6 modes (rigid body: 3 translations + 3 rotations)
-    // For remaining low-frequency torsional modes: harmonic approximation
-    //   S ≈ kB * [1 - ln(ν/kBT)]  (high-temperature / classical limit)
+#ifdef FLEXAIDS_HAS_EIGEN
+    // Collect valid eigenvalues into Eigen array, then vectorise
+    std::vector<double> ev_buf;
+    ev_buf.reserve(modes.size());
+    for (size_t m = 6; m < modes.size(); ++m)
+        if (modes[m].eigenvalue > 1e-6) ev_buf.push_back(modes[m].eigenvalue);
+    if (ev_buf.empty()) return 0.0;
+
+    Eigen::Map<Eigen::ArrayXd> evals(ev_buf.data(), (int)ev_buf.size());
+    Eigen::ArrayXd ln_arg = kT / evals; // element-wise
+    // S_mode = kB*(1 + ln(kBT/ω)) for modes where ln_arg > 1e-6
+    Eigen::ArrayXd mask = (ln_arg > 1e-6).cast<double>();
+    return kB_kcal * (mask * (1.0 + ln_arg.log())).sum();
+#else
+    double S = 0.0;
     for (size_t m = 6; m < modes.size(); ++m) {
-        double eigenval = modes[m].eigenvalue; // kcal mol⁻¹ rad⁻²
-        if (eigenval < 1e-6) continue;         // skip zero / imaginary modes
-
-        // Angular frequency: ω² ≈ eigenvalue (in rad²/ps²; use reduced units)
-        // Classical limit: S_mode = kB * (1 + ln(kBT/hω))
-        // In kcal/mol units: hω ≈ eigenvalue (already in energy/rad² ≡ rad frequency)
-        double ln_arg = kT / eigenval;
-        if (ln_arg < 1e-6) continue;
-        S_vib += kB_kcal * (1.0 + std::log(ln_arg));
+        if (modes[m].eigenvalue < 1e-6) continue;
+        double la = kT / modes[m].eigenvalue;
+        if (la > 1e-6) S += kB_kcal * (1.0 + std::log(la));
     }
-    return S_vib;
+    return S;
+#endif
 }
 
 // ─── run_shannon_thermo_stack ────────────────────────────────────────────────
@@ -164,50 +277,46 @@ FullThermoResult run_shannon_thermo_stack(
     double                          base_deltaG,
     double                          temperature_K)
 {
-    // Initialise the 256×256 lookup matrix (no-op if already done)
     ShannonEnergyMatrix::instance().initialise();
 
-    // 1. Boltzmann weights → energies for Shannon histogram
-    auto weights    = stat_engine.boltzmann_weights();
-    auto thermo     = stat_engine.compute();
-
-    // Convert weights to log-energies for binning (use negative log as proxy)
+    auto weights = stat_engine.boltzmann_weights();
     std::vector<double> log_weights;
     log_weights.reserve(weights.size());
     for (double w : weights)
-        if (w > 0.0)
-            log_weights.push_back(-std::log(w));
+        if (w > 0.0) log_weights.push_back(-std::log(w));
 
-    double S_conf_bits = compute_shannon_entropy(log_weights, DEFAULT_HIST_BINS);
+    double S_conf_bits  = compute_shannon_entropy(log_weights, DEFAULT_HIST_BINS);
+    double S_vib        = tencm_model.is_built()
+                          ? compute_torsional_vibrational_entropy(tencm_model.modes(), temperature_K)
+                          : 0.0;
+    double S_conf_phys  = S_conf_bits * kB_kcal;
+    double total_S      = S_conf_phys * (1.0 + 0.5 * S_conf_bits) + S_vib;
+    double S_contrib    = -temperature_K * total_S;
+    double final_dG     = base_deltaG + S_contrib;
 
-    // 2. Torsional ENCoM vibrational entropy (protein backbone modes)
-    double S_vib = 0.0;
-    if (tencm_model.is_built()) {
-        S_vib = compute_torsional_vibrational_entropy(
-            tencm_model.modes(), temperature_K);
-    }
-
-    // 3. Combine: total entropy-weighted correction
-    //    ΔG_corr = ΔG_base + (-T)(S_conf_physical + S_vib)
-    //    S_conf_physical ≈ S_conf_bits * kB (convert bits to kcal/mol·K)
-    double S_conf_physical = S_conf_bits * kB_kcal; // kcal/mol·K
-    double total_entropy   = S_conf_physical * (1.0 + 0.5 * S_conf_bits) + S_vib;
-    double entropy_contrib = -temperature_K * total_entropy;
-    double final_deltaG    = base_deltaG + entropy_contrib;
+    const char* hw =
+#if defined(FLEXAIDS_USE_CUDA)
+        "CUDA";
+#elif defined(ENABLE_METAL_CORE)
+        "Metal";
+#elif defined(__AVX512F__)
+        "AVX-512";
+#elif defined(_OPENMP)
+        "OpenMP";
+#else
+        "scalar";
+#endif
 
     std::string report =
-        "ShannonThermoStack: Shannon(conf)=" + std::to_string(S_conf_bits) +
-        " bits, S_vib=" + std::to_string(S_vib) +
-        " kcal/mol/K, ΔG=" + std::to_string(final_deltaG) + " kcal/mol"
-        " [Metal=" +
-#ifdef ENABLE_METAL_CORE
-        "ON"
-#else
-        "OFF"
+        std::string("ShannonThermoStack[") + hw +
+#ifdef FLEXAIDS_HAS_EIGEN
+        "+Eigen"
 #endif
-        + "]";
+        "]: S_conf=" + std::to_string(S_conf_bits) +
+        " bits, S_vib=" + std::to_string(S_vib) +
+        " kcal/mol/K, ΔG=" + std::to_string(final_dG) + " kcal/mol";
 
-    return { final_deltaG, S_conf_bits, S_vib, entropy_contrib, report };
+    return { final_dG, S_conf_bits, S_vib, S_contrib, report };
 }
 
 } // namespace shannon_thermo
