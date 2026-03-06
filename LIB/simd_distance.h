@@ -114,11 +114,11 @@ inline float sum_sq_distances(const float* __restrict__ a_xyz,
 // Lennard-Jones r^-12 wall energy for 8 distances simultaneously.
 //   r2[8]  – squared distances (must NOT be zero)
 //   rAB12  – (permeability * r_AB)^12 precomputed
-//   KWALL  – wall constant
+//   k_wall – wall constant
 // Writes Ewall[8]; caller is responsible for masking < clash_distance.
 inline void lj_wall_8x(const float* __restrict__ r2,
                         float inv_rAB12,
-                        float KWALL,
+                        float k_wall,
                         float* __restrict__ Ewall) noexcept {
     __m256 vr2    = _mm256_loadu_ps(r2);
     // Approximate inv_r2 via Newton step on _mm256_rcp_ps
@@ -130,7 +130,7 @@ inline void lj_wall_8x(const float* __restrict__ r2,
     __m256 inv_r4  = _mm256_mul_ps(inv_r2, inv_r2);
     __m256 inv_r6  = _mm256_mul_ps(inv_r4, inv_r2);
     __m256 inv_r12 = _mm256_mul_ps(inv_r6, inv_r6);
-    __m256 vKWALL  = _mm256_set1_ps(KWALL);
+    __m256 vKWALL  = _mm256_set1_ps(k_wall);
     __m256 vrAB12  = _mm256_set1_ps(inv_rAB12);
     __m256 e = _mm256_mul_ps(vKWALL, _mm256_sub_ps(inv_r12, vrAB12));
     _mm256_storeu_ps(Ewall, e);
@@ -180,12 +180,12 @@ inline float sum_sq_distances(const float* a, const float* b, int N) noexcept {
     return s;
 }
 
-inline void lj_wall_8x(const float* r2, float inv_rAB12, float KWALL,
+inline void lj_wall_8x(const float* r2, float inv_rAB12, float k_wall,
                         float* Ewall) noexcept {
     for (int k = 0; k < 8; ++k) {
         float inv_r6 = 1.0f / (r2[k]*r2[k]*r2[k]);
         float inv_r12 = inv_r6 * inv_r6;
-        Ewall[k] = KWALL * (inv_r12 - inv_rAB12);
+        Ewall[k] = k_wall * (inv_r12 - inv_rAB12);
     }
 }
 

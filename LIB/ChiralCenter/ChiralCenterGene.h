@@ -21,8 +21,9 @@
 #include <cstdint>
 #include <string>
 
-// Forward declarations
-struct atom;
+// Forward declarations (must match typedef in flexaid.h)
+struct atom_struct;
+typedef atom_struct atom;
 
 namespace chiral {
 

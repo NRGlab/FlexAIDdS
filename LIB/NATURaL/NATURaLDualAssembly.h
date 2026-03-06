@@ -21,6 +21,7 @@
 #pragma once
 
 #include "../flexaid.h"
+#include "../Vcontacts.h"
 #include "../statmech.h"
 #include "RibosomeElongation.h"
 #include "TransloconInsertion.h"

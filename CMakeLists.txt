@@ -133,6 +133,10 @@ target_sources(FlexAID PRIVATE
         LIB/read_emat.cpp
         LIB/read_spheres.cpp
         LIB/cluster.cpp
+        LIB/DensityPeak_Cluster.cpp
+        LIB/FastOPTICS_cluster.cpp
+        LIB/FOPTICS.cpp
+        LIB/BindingMode.cpp
         LIB/rna_structure.cpp
         LIB/shortest_path.cpp
         LIB/assign_shortflex.cpp

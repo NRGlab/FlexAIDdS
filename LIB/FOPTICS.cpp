@@ -139,7 +139,7 @@ void FastOPTICS::Execute_FastOPTICS(char* end_strfile, char* tmp_end_strfile)
     }
 
 	// Build object, compute projections, density estimates and density neighborhoods (in serial order of function calls below)
-	RandomProjectedNeighborsAndDensities::RandomProjectedNeighborsAndDensities MultiPartition(this->points, this->minPoints, this); // use minPoints amount of random projections
+	RandomProjectedNeighborsAndDensities MultiPartition(this->points, this->minPoints, this); // use minPoints amount of random projections
 	MultiPartition.computeSetBounds(ptInd);
 	MultiPartition.getInverseDensities(this->inverseDensities);
 	MultiPartition.getNeighbors(this->neighbors);
@@ -167,11 +167,11 @@ void FastOPTICS::Execute_FastOPTICS(char* end_strfile, char* tmp_end_strfile)
 		if( (this->points[pt]).first != NULL && (this->points[pt].first)->app_evalue < 0 )
 		{
 			// Calling Pose constructor: Pose holds the point's chromosome at the correct OPTICS position
-			Pose::Pose Pose((this->points[pt]).first, pt, pos, this->reachDist[pt], this->Population->Temperature, (this->points[pt]).second);
-            this->OPTICS.push_back(Pose);
+			Pose pose((this->points[pt]).first, pt, pos, this->reachDist[pt], this->Population->Temperature, (this->points[pt]).second);
+            this->OPTICS.push_back(pose);
 		}
 	}
-    std::sort(this->OPTICS.begin(), this->OPTICS.end(), PoseClassifier::PoseClassifier());
+    std::sort(this->OPTICS.begin(), this->OPTICS.end(), PoseClassifier());
 
 	// Build BindingModes (aggregation of Poses in BindingModes)
 	// OPTICS extraction rule: a point with reachDist > epsilon (or UNDEFINED) marks the
@@ -182,7 +182,7 @@ void FastOPTICS::Execute_FastOPTICS(char* end_strfile, char* tmp_end_strfile)
 	// (nDimensions = num_het_atm * 3), while cluster_rmsd is in RMSD units.
 	// Relationship: euclidean_dist = RMSD * sqrt(num_het_atm)
 	const float epsilon = this->FA->cluster_rmsd * sqrtf(static_cast<float>(this->FA->num_het_atm));
-	BindingMode::BindingMode Current(this->Population);
+	BindingMode Current(this->Population);
 	for(std::vector< Pose >::iterator it = this->OPTICS.begin(); it != this->OPTICS.end(); ++it)
 	{
 		bool isNewClusterStart = isUndefinedDist(it->reachDist) ||
@@ -473,7 +473,7 @@ std::vector<float> FastOPTICS::Vectorized_Cartesian_Coordinates(int chrom_index)
 
 void FastOPTICS::ExpandClusterOrder(int ipt)
 {
-    std::priority_queue< ClusterOrdering, std::vector<ClusterOrdering>, ClusterOrderingComparator::ClusterOrderingComparator > queue;
+    std::priority_queue< ClusterOrdering, std::vector<ClusterOrdering>, ClusterOrderingComparator > queue;
 	ClusterOrdering tmp(ipt,0,1e6f);
 	queue.push(tmp);
 
@@ -505,7 +505,7 @@ void FastOPTICS::ExpandClusterOrder(int ipt)
 				this->reachDist[iNeigh] = nrdist;
 			else if(nrdist < this->reachDist[iNeigh])
 				this->reachDist[iNeigh] = nrdist;
-			tmp = ClusterOrdering::ClusterOrdering(iNeigh, currPt, nrdist);
+			tmp = ClusterOrdering(iNeigh, currPt, nrdist);
 			queue.push(tmp);
 		}
 	}

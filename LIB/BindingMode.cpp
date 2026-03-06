@@ -28,7 +28,7 @@ void BindingPopulation::Entropize()
 	{
 		it->set_energy();
 	}
-	std::sort(this->BindingModes.begin(), this->BindingModes.end(), BindingPopulation::EnergyComparator::EnergyComparator());
+	std::sort(this->BindingModes.begin(), this->BindingModes.end(), BindingPopulation::EnergyComparator());
 }
 
 
