@@ -1,6 +1,10 @@
 #include "gaboom.h"
 #include "boinc.h"
 
+#ifdef _OPENMP
+#  include <omp.h>
+#endif
+
 /******************************************************************************
  * SUBROUTINE ic2cf gets a vector with internal coordinates rebuilds the 
  * cartesian coordinates and calculates the complementarity function. Its 
@@ -243,7 +247,16 @@ cfstr ic2cf(FA_Global* FA,VC_Global* VC,atom* atoms,resid* residue,
 
   
 	// add rotamer list to dee list
+	// When running inside an OpenMP parallel region each thread has its own
+	// copy of FA (thread-local), so DEE updates are serialised via a critical
+	// section and written back to FA directly (the thread-local FA shares the
+	// psFlexDEENode pointer with the master; the critical section prevents
+	// concurrent linked-list corruption).
+#ifdef _OPENMP
+	if (FA->useflexdee > 0 && rclash && !omp_in_parallel()) {
+#else
 	if (FA->useflexdee > 0 && rclash) {
+#endif
     
 		NEW( psFlexDEENode, sFlexDEE_Node );
 
