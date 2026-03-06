@@ -10,12 +10,21 @@
 #include <omp.h>
 #endif
 
+#ifdef FLEXAIDS_HAS_EIGEN
+#include <Eigen/Dense>
+#endif
+
 #ifdef FLEXAIDS_USE_CUDA
 #include <vector>
 #include "cuda_eval.cuh"
 #endif
 
+#ifdef FLEXAIDS_USE_METAL
+#include "metal_eval.h"
+#endif
+
 #include "statmech.h"
+#include "NATURaL/NATURaLDualAssembly.h"
 
 // in milliseconds
 # define SLEEP 25
@@ -408,6 +417,39 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 		printf("  Energy std dev        σ_E = %10.4f kcal/mol\n", td.std_energy);
 		printf("  Heat capacity         C_v = %10.4f kcal/(mol·K)\n", td.heat_capacity);
 		printf("  Entropy               S   = %10.6f kcal/(mol·K)\n", td.entropy);
+	}
+
+	// NATURaL co-translational / co-transcriptional DualAssembly analysis
+	if (FA->resligand && FA->resligand->fatm && FA->resligand->latm) {
+		int lig_start   = FA->resligand->fatm[0];
+		int lig_end     = FA->resligand->latm[0];
+		int n_lig_atoms = lig_end - lig_start + 1;
+		if (n_lig_atoms > 0 && FA->MIN_NUM_RESIDUE > 0) {
+			natural::NATURaLConfig ncfg = natural::auto_configure(
+				&atoms[lig_start], n_lig_atoms,
+				residue, FA->MIN_NUM_RESIDUE);
+			if (ncfg.enabled) {
+				ncfg.temperature_K = (FA->temperature > 0)
+				                     ? static_cast<double>(FA->temperature)
+				                     : 310.0;
+				natural::DualAssemblyEngine engine(
+					ncfg, FA, VC, atoms, residue, FA->MIN_NUM_RESIDUE);
+				auto trajectory = engine.run();
+				printf("--- NATURaL Co-translational DualAssembly (%zu growth steps) ---\n",
+				       trajectory.size());
+				if (!trajectory.empty()) {
+					printf("  Final ΔG (co-translational) = %10.4f kcal/mol\n",
+					       engine.final_deltaG());
+					int n_pause = 0, n_tm = 0;
+					for (const auto& step : trajectory) {
+						if (step.is_pause_site) ++n_pause;
+						if (step.tm_inserted)   ++n_tm;
+					}
+					printf("  Pause sites detected        = %d\n", n_pause);
+					printf("  TM insertions               = %d\n", n_tm);
+				}
+			}
+		}
 	}
 
 	return n_chrom_snapshot;
@@ -860,94 +902,296 @@ void calculate_fitness(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* chr
 	//float tot=0.0;
 	double share,rmsp;
 
-	// Chromosome evaluation: GPU batch path (FLEXAIDS_USE_CUDA) or
-	// OpenMP-parallelised CPU path.
-#ifdef FLEXAIDS_USE_CUDA
-	{
-		int n_atoms = FA->MIN_NUM_ATOM;
-		int n_types = FA->ntypes;
-		int n_genes = GB->num_genes;
+	// ── Chromosome evaluation ────────────────────────────────────────────────
+	// Priority order: CUDA GPU → Metal GPU → OpenMP CPU (thread-safe).
 
-		// Build flat host arrays from atoms[]
-		std::vector<float> h_xyz(n_atoms * 3);
-		std::vector<int>   h_type(n_atoms);
-		std::vector<float> h_radius(n_atoms);
-		for (int a = 0; a < n_atoms; ++a) {
-			h_xyz[a*3+0] = atoms[a].coor[0];
-			h_xyz[a*3+1] = atoms[a].coor[1];
-			h_xyz[a*3+2] = atoms[a].coor[2];
-			h_type[a]    = atoms[a].type - 1;  // convert 1-based to 0-based
-			h_radius[a]  = atoms[a].radius;
-		}
+	// Helper lambda: sample each energy-matrix density function at n_samples
+	// evenly-spaced x values in [0, 1] and pack into a flat float array
+	// [n_types × n_types × n_samples] for GPU upload.
+	// When Eigen is available, the x-value linspace is built via Eigen::ArrayXd
+	// for vectorised construction; the get_yval evaluation loop is then
+	// auto-vectorisable because it operates on a contiguous double buffer.
+	auto build_emat_sampled = [&](int n_types, int n_samples) -> std::vector<float> {
+		const size_t total = static_cast<size_t>(n_types) * n_types * n_samples;
+		std::vector<float> out(total, 0.0f);
 
-		// Flatten energy matrix: use y-value at full contact (weight==1) or
-		// midpoint interpolation (density function) as a representative scalar.
-		std::vector<float> h_emat(n_types * n_types, 0.0f);
+#ifdef FLEXAIDS_HAS_EIGEN
+		// Build the x-sample linspace via Eigen (vectorised).
+		Eigen::ArrayXd xs = Eigen::ArrayXd::LinSpaced(n_samples, 0.0, 1.0);
 		for (int t1 = 0; t1 < n_types; ++t1) {
 			for (int t2 = 0; t2 < n_types; ++t2) {
-				struct energy_matrix* em = &FA->energy_matrix[t1*n_types + t2];
-				if (em->energy_values != NULL) {
-					if (em->weight)
-						h_emat[t1*n_types + t2] = em->energy_values->y;
-					else
-						h_emat[t1*n_types + t2] = static_cast<float>(get_yval(em, 0.5));
+				struct energy_matrix* em = &FA->energy_matrix[t1 * n_types + t2];
+				if (em->energy_values == NULL) continue;
+				float* dst = &out[(t1 * n_types + t2) * n_samples];
+				for (int k = 0; k < n_samples; ++k)
+					dst[k] = static_cast<float>(get_yval(em, xs[k]));
+			}
+		}
+#else
+		for (int t1 = 0; t1 < n_types; ++t1) {
+			for (int t2 = 0; t2 < n_types; ++t2) {
+				struct energy_matrix* em = &FA->energy_matrix[t1 * n_types + t2];
+				if (em->energy_values == NULL) continue;
+				for (int k = 0; k < n_samples; ++k) {
+					double x = static_cast<double>(k) / (n_samples - 1);
+					out[(t1 * n_types + t2) * n_samples + k] =
+						static_cast<float>(get_yval(em, x));
 				}
 			}
 		}
+#endif
+		return out;
+	};
 
-		// Ligand atom range (0-based indices into atoms[])
-		int lig_first = (FA->resligand != NULL && FA->resligand->fatm != NULL)
-		                ? FA->resligand->fatm[0] : 0;
-		int lig_last  = (FA->resligand != NULL && FA->resligand->latm != NULL)
-		                ? FA->resligand->latm[0] : 0;
+#ifdef FLEXAIDS_USE_CUDA
+	{
+		// Persistent CUDA context: atom data uploaded once; re-init only when
+		// the system geometry changes (different run or atom count changes).
+		static CudaEvalCtx* s_cuda_ctx    = nullptr;
+		static int           s_cuda_natom = 0;
+		static int           s_cuda_ntype = 0;
 
-		CudaEvalCtx* ctx = cuda_eval_init(
-			n_atoms, n_types, pop_size,
-			lig_first, lig_last, FA->permeability,
-			h_xyz.data(), h_type.data(), h_radius.data(), h_emat.data());
+		const int n_atoms = FA->atm_cnt_real;
+		const int n_types = FA->ntypes;
+		const int n_genes = GB->num_genes;
+		const int ns      = CUDA_EMAT_SAMPLES;
 
-		// Build flat gene array [pop_size × n_genes] from to_ic values
-		std::vector<double> h_genes(pop_size * n_genes, 0.0);
-		for (int c = 0; c < pop_size; ++c) {
-			for (int g = 0; g < n_genes; ++g)
-				h_genes[c*n_genes + g] = chrom[c].genes[g].to_ic;
+		if (!s_cuda_ctx || s_cuda_natom != n_atoms || s_cuda_ntype != n_types) {
+			if (s_cuda_ctx) cuda_eval_shutdown(s_cuda_ctx);
+
+			std::vector<float> h_xyz(n_atoms * 3);
+			std::vector<int>   h_type(n_atoms);
+			std::vector<float> h_radius(n_atoms);
+			for (int a = 0; a < n_atoms; ++a) {
+				h_xyz[a*3+0] = atoms[a].coor[0];
+				h_xyz[a*3+1] = atoms[a].coor[1];
+				h_xyz[a*3+2] = atoms[a].coor[2];
+				h_type[a]    = atoms[a].type - 1;  // 1-based → 0-based
+				h_radius[a]  = atoms[a].radius;
+			}
+			std::vector<float> h_emat = build_emat_sampled(n_types, ns);
+
+			const int lig_first = (FA->resligand && FA->resligand->fatm)
+			                    ? FA->resligand->fatm[0] : 0;
+			const int lig_last  = (FA->resligand && FA->resligand->latm)
+			                    ? FA->resligand->latm[0] : 0;
+
+			s_cuda_ctx    = cuda_eval_init(n_atoms, n_types, MAX_NUM_CHROM,
+			                               lig_first, lig_last, FA->permeability,
+			                               h_xyz.data(), h_type.data(),
+			                               h_radius.data(), h_emat.data());
+			s_cuda_natom  = n_atoms;
+			s_cuda_ntype  = n_types;
 		}
 
-		std::vector<double> h_cf_out(pop_size, 0.0);
-		cuda_eval_batch(ctx, pop_size, n_genes, h_genes.data(), h_cf_out.data());
-		cuda_eval_shutdown(ctx);
+		// Build gene array for this batch.
+		std::vector<double> h_genes(pop_size * n_genes, 0.0);
+		for (int c = 0; c < pop_size; ++c)
+			for (int g = 0; g < n_genes; ++g)
+				h_genes[c * n_genes + g] = chrom[c].genes[g].to_ic;
 
-		// Copy CUDA scores back; skip chromosomes already marked evaluated ('n')
+		std::vector<double> h_com(pop_size), h_wal(pop_size), h_sas(pop_size);
+		cuda_eval_batch(s_cuda_ctx, pop_size, n_genes, h_genes.data(),
+		                h_com.data(), h_wal.data(), h_sas.data());
+
 		for (int c = 0; c < pop_size; ++c) {
 			if (chrom[c].status != 'n') {
-				chrom[c].cf.com     = h_cf_out[c];
-				chrom[c].cf.con     = 0.0;
-				chrom[c].cf.wal     = 0.0;
-				chrom[c].cf.sas     = 0.0;
-				chrom[c].cf.totsas  = 0.0;
-				chrom[c].cf.rclash  = 0;
-				chrom[c].evalue     = h_cf_out[c];
-				chrom[c].app_evalue = h_cf_out[c];
-				chrom[c].status     = 'n';
+				chrom[c].cf.com    = h_com[c];
+				chrom[c].cf.wal    = h_wal[c];
+				chrom[c].cf.sas    = h_sas[c];
+				chrom[c].cf.con    = 0.0;
+				chrom[c].cf.totsas = 0.0;
+				chrom[c].cf.rclash = (h_wal[c] > 1e4) ? 1 : 0;
+				chrom[c].evalue     = get_cf_evalue(&chrom[c].cf);
+				chrom[c].app_evalue = get_apparent_cf_evalue(&chrom[c].cf);
+				chrom[c].status    = 'n';
 			}
 		}
 	}
-#else
-	// OpenMP-parallelised chromosome evaluation: each thread gets its own
-	// copy of the mutable scoring state via firstprivate on the VC context.
-	#ifdef _OPENMP
-	#pragma omp parallel for schedule(dynamic) default(none) \
-		shared(chrom, pop_size, FA, GB, VC, gene_lim, atoms, residue, cleftgrid, target)
-	#endif
-	for(i=0;i<pop_size;i++){
-		if(chrom[i].status != 'n'){
-			chrom[i].cf=eval_chromosome(FA,GB,VC,gene_lim,atoms,residue,cleftgrid,chrom[i].genes,target);
-			chrom[i].evalue=get_cf_evalue(&chrom[i].cf);
-			chrom[i].app_evalue=get_apparent_cf_evalue(&chrom[i].cf);
-			chrom[i].status='n';
+
+#elif defined(FLEXAIDS_USE_METAL)
+	{
+		// Persistent Metal context (same caching strategy as CUDA).
+		static MetalEvalCtx* s_metal_ctx   = nullptr;
+		static int            s_metal_natom = 0;
+		static int            s_metal_ntype = 0;
+
+		const int n_atoms = FA->atm_cnt_real;
+		const int n_types = FA->ntypes;
+		const int n_genes = GB->num_genes;
+		const int ns      = METAL_EMAT_SAMPLES;
+
+		if (!s_metal_ctx || s_metal_natom != n_atoms || s_metal_ntype != n_types) {
+			if (s_metal_ctx) metal_eval_shutdown(s_metal_ctx);
+
+			std::vector<float> h_xyz(n_atoms * 3);
+			std::vector<int>   h_type(n_atoms);
+			std::vector<float> h_radius(n_atoms);
+			for (int a = 0; a < n_atoms; ++a) {
+				h_xyz[a*3+0] = atoms[a].coor[0];
+				h_xyz[a*3+1] = atoms[a].coor[1];
+				h_xyz[a*3+2] = atoms[a].coor[2];
+				h_type[a]    = atoms[a].type - 1;
+				h_radius[a]  = atoms[a].radius;
+			}
+			std::vector<float> h_emat = build_emat_sampled(n_types, ns);
+
+			const int lig_first = (FA->resligand && FA->resligand->fatm)
+			                    ? FA->resligand->fatm[0] : 0;
+			const int lig_last  = (FA->resligand && FA->resligand->latm)
+			                    ? FA->resligand->latm[0] : 0;
+
+			s_metal_ctx   = metal_eval_init(n_atoms, n_types, MAX_NUM_CHROM,
+			                                lig_first, lig_last, FA->permeability,
+			                                h_xyz.data(), h_type.data(),
+			                                h_radius.data(), h_emat.data(), ns);
+			s_metal_natom = n_atoms;
+			s_metal_ntype = n_types;
+		}
+
+		std::vector<double> h_genes(pop_size * n_genes, 0.0);
+		for (int c = 0; c < pop_size; ++c)
+			for (int g = 0; g < n_genes; ++g)
+				h_genes[c * n_genes + g] = chrom[c].genes[g].to_ic;
+
+		std::vector<double> h_com(pop_size), h_wal(pop_size), h_sas(pop_size);
+		metal_eval_batch(s_metal_ctx, pop_size, n_genes, h_genes.data(),
+		                 h_com.data(), h_wal.data(), h_sas.data());
+
+		for (int c = 0; c < pop_size; ++c) {
+			if (chrom[c].status != 'n') {
+				chrom[c].cf.com    = h_com[c];
+				chrom[c].cf.wal    = h_wal[c];
+				chrom[c].cf.sas    = h_sas[c];
+				chrom[c].cf.con    = 0.0;
+				chrom[c].cf.totsas = 0.0;
+				chrom[c].cf.rclash = (h_wal[c] > 1e4) ? 1 : 0;
+				chrom[c].evalue     = get_cf_evalue(&chrom[c].cf);
+				chrom[c].app_evalue = get_apparent_cf_evalue(&chrom[c].cf);
+				chrom[c].status    = 'n';
+			}
 		}
 	}
+
+#else
+	// ── Thread-safe OpenMP CPU path ─────────────────────────────────────────
+	// Each OpenMP thread receives its own private copies of every data
+	// structure that Vcontacts/vcfunction/ic2cf writes to:
+	//   • atoms[]        – internal coords (dis/ang/dih) and Cartesian (coor)
+	//   • residue[]      – rotamer index (.rot)
+	//   • FA scratch     – contacts[], contributions[], optres[].cf
+	//   • VC workspace   – Calc[], Calclist[], ca_index[], ca_rec[],
+	//                      seed[], contlist[], ptorder[], centerpt[],
+	//                      poly[], cont[], vedge[]
+	// Read-only fields (energy_matrix, map_par, …) are shared.
+	// The DEE linked-list update in ic2cf is skipped in parallel mode
+	// (guarded by omp_in_parallel() in ic2cf.cpp) to avoid concurrent
+	// linked-list corruption; DEE pruning still operates in serial calls.
+	{
+#ifdef _OPENMP
+		const int n_thr = omp_get_max_threads();
+#else
+		const int n_thr = 1;
 #endif
+		const int natm  = FA->atm_cnt;
+		const int natmr = FA->atm_cnt_real;
+		const int nres  = FA->res_cnt;
+		const int nopt  = FA->num_optres;
+		const int nctb  = FA->ntypes * FA->ntypes;
+
+		// Per-thread mutable atom arrays.
+		std::vector<std::vector<atom>>  tl_atoms(n_thr,
+		    std::vector<atom>(atoms, atoms + natm));
+		// Per-thread residue arrays (pointer fields shared read-only; .rot private).
+		std::vector<std::vector<resid>> tl_res(n_thr,
+		    std::vector<resid>(residue, residue + nres));
+		// Per-thread FA copies with redirected mutable scratch buffers.
+		std::vector<FA_Global>           tl_fa(n_thr, *FA);
+		std::vector<std::vector<int>>    tl_contacts(n_thr, std::vector<int>(100000, 0));
+		std::vector<std::vector<float>>  tl_contrib(n_thr, std::vector<float>(nctb, 0.0f));
+		std::vector<std::vector<OptRes>> tl_optres(n_thr,
+		    std::vector<OptRes>(FA->optres, FA->optres + nopt));
+		// Per-thread VC workspace (Vcontacts writes all these each call).
+		std::vector<VC_Global>               tl_vc(n_thr, *VC);
+		std::vector<std::vector<atomsas>>    tl_calc(n_thr, std::vector<atomsas>(natmr));
+		std::vector<std::vector<int>>        tl_calclist(n_thr, std::vector<int>(natmr));
+		std::vector<std::vector<int>>        tl_caidx(n_thr, std::vector<int>(natmr, -1));
+		std::vector<std::vector<ca_struct>>  tl_carec(n_thr,
+		    std::vector<ca_struct>(VC->ca_recsize));
+		std::vector<std::vector<int>>        tl_seed(n_thr,
+		    std::vector<int>(3 * natmr));
+		std::vector<std::vector<contactlist>> tl_contlist(n_thr,
+		    std::vector<contactlist>(10000));
+		std::vector<std::vector<ptindex>>    tl_ptorder(n_thr,
+		    std::vector<ptindex>(MAX_PT));
+		std::vector<std::vector<vertex>>     tl_centerpt(n_thr,
+		    std::vector<vertex>(MAX_PT));
+		std::vector<std::vector<vertex>>     tl_poly(n_thr,
+		    std::vector<vertex>(MAX_POLY));
+		std::vector<std::vector<plane>>      tl_cont(n_thr,
+		    std::vector<plane>(MAX_PT));
+		std::vector<std::vector<edgevector>> tl_vedge(n_thr,
+		    std::vector<edgevector>(MAX_POLY));
+
+		for (int t = 0; t < n_thr; ++t) {
+			// Redirect FA mutable scratch to per-thread buffers.
+			tl_fa[t].contacts      = tl_contacts[t].data();
+			tl_fa[t].contributions = tl_contrib[t].data();
+			tl_fa[t].optres        = tl_optres[t].data();
+			// Redirect VC mutable workspace to per-thread buffers.
+			tl_vc[t].Calc      = tl_calc[t].data();
+			tl_vc[t].Calclist  = tl_calclist[t].data();
+			tl_vc[t].ca_index  = tl_caidx[t].data();
+			tl_vc[t].ca_rec    = tl_carec[t].data();
+			tl_vc[t].seed      = tl_seed[t].data();
+			tl_vc[t].contlist  = tl_contlist[t].data();
+			tl_vc[t].ptorder   = tl_ptorder[t].data();
+			tl_vc[t].centerpt  = tl_centerpt[t].data();
+			tl_vc[t].poly      = tl_poly[t].data();
+			tl_vc[t].cont      = tl_cont[t].data();
+			tl_vc[t].vedge     = tl_vedge[t].data();
+			// box is shared: if vindex==1 it's pre-built read-only;
+			// if vindex==0 Vcontacts will malloc/vcfunction will free per call.
+		}
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic) default(none) \
+	shared(chrom, pop_size, GB, gene_lim, cleftgrid, target, \
+	       atoms, residue, FA, VC, \
+	       tl_atoms, tl_res, tl_fa, tl_optres, tl_vc, \
+	       natm, nres, nopt)
+#endif
+		for (int ii = 0; ii < pop_size; ++ii) {
+			if (chrom[ii].status == 'n') continue;
+#ifdef _OPENMP
+			const int tid = omp_get_thread_num();
+#else
+			const int tid = 0;
+#endif
+			// Reset per-thread state to the reference protein configuration.
+			std::copy(atoms,   atoms + natm,   tl_atoms[tid].begin());
+			std::copy(residue, residue + nres, tl_res[tid].begin());
+			// optres cf fields are cleared by vcfunction itself; pre-clear for safety.
+			for (int o = 0; o < nopt; ++o) {
+				tl_optres[tid][o].cf.com    = 0.0;
+				tl_optres[tid][o].cf.wal    = 0.0;
+				tl_optres[tid][o].cf.sas    = 0.0;
+				tl_optres[tid][o].cf.totsas = 0.0;
+				tl_optres[tid][o].cf.con    = 0.0;
+				tl_optres[tid][o].cf.rclash = 0;
+			}
+			tl_vc[tid].numcarec = 0;
+
+			chrom[ii].cf = eval_chromosome(
+			    &tl_fa[tid], GB, &tl_vc[tid], gene_lim,
+			    tl_atoms[tid].data(), tl_res[tid].data(),
+			    cleftgrid, chrom[ii].genes, target);
+			chrom[ii].evalue     = get_cf_evalue(&chrom[ii].cf);
+			chrom[ii].app_evalue = get_apparent_cf_evalue(&chrom[ii].cf);
+			chrom[ii].status     = 'n';
+		}
+	}
+#endif  // FLEXAIDS_USE_CUDA / FLEXAIDS_USE_METAL / CPU
 
 	QuickSort(chrom,0,pop_size-1,true);
 
@@ -970,26 +1214,27 @@ void calculate_fitness(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* chr
 		   each chromosome is assigned an integer value that
 		   corresponds to its position in index_map. Moreover,
 		   each chromosome's fitness is lowered by sharing.
+		   The niche count (share) must be accumulated over ALL j before
+		   dividing — fixed from the previous per-j assignment bug.
+		   The outer loop is data-race free (each i writes only chrom[i].fitnes)
+		   and is parallelised with OpenMP.
 		*/
-
-		for(i=0;i<GB->num_chrom;i++){
-
-			share=0.0;
-			for(j=0;j<GB->num_chrom;j++){
-
-				rmsp=calc_rmsp(GB->num_genes,chrom[i].genes,chrom[j].genes,
-					       FA->map_par,cleftgrid);
-
-				//printf("i=%d j=%d rmsp=%f\n",i,j,rmsp);
-				if(rmsp <= GB->sig_share){
-					share += (1.0 - pow((rmsp/GB->sig_share),GB->alpha));
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) default(none) \
+	shared(chrom, GB, FA, cleftgrid)
+#endif
+		for(int pi=0; pi<GB->num_chrom; pi++){
+			double pshare = 0.0;
+			for(int pj=0; pj<GB->num_chrom; pj++){
+				double prmsp = calc_rmsp(GB->num_genes,
+				                         chrom[pi].genes, chrom[pj].genes,
+				                         FA->map_par, cleftgrid);
+				if(prmsp <= GB->sig_share){
+					pshare += (1.0 - pow((prmsp/GB->sig_share), GB->alpha));
 				}
-				//share=1.0;
-				chrom[i].fitnes = (GB->num_chrom-i)/share;
-				//printf("i=%d lf=%d share=%f fit=%f\n",i,(GB->num_chrom-i),
-				//       share,chrom[i].fitnes);
-				//PAUSE;
 			}
+			// Assign fitness AFTER accumulating the full niche count.
+			chrom[pi].fitnes = (double)(GB->num_chrom - pi) / pshare;
 		}
 	}
 
@@ -1246,18 +1491,92 @@ void populate_chromosomes(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* 
 
 	//------------------------------------------------------------------------------
 
-	// calculate evalue for each chromosome (OpenMP-parallel)
-	#ifdef _OPENMP
-	#pragma omp parallel for schedule(dynamic) default(none) \
-		shared(chrom, FA, GB, VC, gene_lim, atoms, residue, cleftgrid, target, popoffset)
-	#endif
-	for(i=popoffset;i<GB->num_chrom;i++){
-		chrom[i].cf=eval_chromosome(FA,GB,VC,gene_lim,atoms,residue,cleftgrid,chrom[i].genes,target);
-		chrom[i].evalue=get_cf_evalue(&chrom[i].cf);
-		chrom[i].app_evalue=get_apparent_cf_evalue(&chrom[i].cf);
-		chrom[i].status='n';
-		//PAUSE;
-		//printf("evalue(%d)=%6.3f\n",i,chrom[i].evalue);
+	// calculate evalue for each chromosome — thread-safe OpenMP parallel eval.
+	// Uses the same per-thread VC/atoms/FA workspace strategy as calculate_fitness.
+	{
+#ifdef _OPENMP
+		const int n_thr = omp_get_max_threads();
+#else
+		const int n_thr = 1;
+#endif
+		const int natm  = FA->atm_cnt;
+		const int natmr = FA->atm_cnt_real;
+		const int nres  = FA->res_cnt;
+		const int nopt  = FA->num_optres;
+		const int nctb  = FA->ntypes * FA->ntypes;
+		const int range = GB->num_chrom - popoffset;
+
+		std::vector<std::vector<atom>>   p_atoms(n_thr, std::vector<atom>(atoms, atoms + natm));
+		std::vector<std::vector<resid>>  p_res(n_thr, std::vector<resid>(residue, residue + nres));
+		std::vector<FA_Global>           p_fa(n_thr, *FA);
+		std::vector<std::vector<int>>    p_contacts(n_thr, std::vector<int>(100000, 0));
+		std::vector<std::vector<float>>  p_contrib(n_thr, std::vector<float>(nctb, 0.0f));
+		std::vector<std::vector<OptRes>> p_optres(n_thr,
+		    std::vector<OptRes>(FA->optres, FA->optres + nopt));
+		std::vector<VC_Global>               p_vc(n_thr, *VC);
+		std::vector<std::vector<atomsas>>    p_calc(n_thr, std::vector<atomsas>(natmr));
+		std::vector<std::vector<int>>        p_calclist(n_thr, std::vector<int>(natmr));
+		std::vector<std::vector<int>>        p_caidx(n_thr, std::vector<int>(natmr, -1));
+		std::vector<std::vector<ca_struct>>  p_carec(n_thr,
+		    std::vector<ca_struct>(VC->ca_recsize));
+		std::vector<std::vector<int>>        p_seed(n_thr, std::vector<int>(3 * natmr));
+		std::vector<std::vector<contactlist>> p_contlist(n_thr, std::vector<contactlist>(10000));
+		std::vector<std::vector<ptindex>>    p_ptorder(n_thr, std::vector<ptindex>(MAX_PT));
+		std::vector<std::vector<vertex>>     p_centerpt(n_thr, std::vector<vertex>(MAX_PT));
+		std::vector<std::vector<vertex>>     p_poly(n_thr, std::vector<vertex>(MAX_POLY));
+		std::vector<std::vector<plane>>      p_cont(n_thr, std::vector<plane>(MAX_PT));
+		std::vector<std::vector<edgevector>> p_vedge(n_thr, std::vector<edgevector>(MAX_POLY));
+
+		for (int t = 0; t < n_thr; ++t) {
+			p_fa[t].contacts      = p_contacts[t].data();
+			p_fa[t].contributions = p_contrib[t].data();
+			p_fa[t].optres        = p_optres[t].data();
+			p_vc[t].Calc      = p_calc[t].data();
+			p_vc[t].Calclist  = p_calclist[t].data();
+			p_vc[t].ca_index  = p_caidx[t].data();
+			p_vc[t].ca_rec    = p_carec[t].data();
+			p_vc[t].seed      = p_seed[t].data();
+			p_vc[t].contlist  = p_contlist[t].data();
+			p_vc[t].ptorder   = p_ptorder[t].data();
+			p_vc[t].centerpt  = p_centerpt[t].data();
+			p_vc[t].poly      = p_poly[t].data();
+			p_vc[t].cont      = p_cont[t].data();
+			p_vc[t].vedge     = p_vedge[t].data();
+		}
+
+		(void)range;  // suppress unused warning when _OPENMP not defined
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic) default(none) \
+	shared(chrom, FA, GB, VC, gene_lim, atoms, residue, cleftgrid, target, \
+	       popoffset, p_atoms, p_res, p_fa, p_optres, p_vc, natm, nres, nopt)
+#endif
+		for(i=popoffset;i<GB->num_chrom;i++){
+#ifdef _OPENMP
+			const int tid = omp_get_thread_num();
+#else
+			const int tid = 0;
+#endif
+			std::copy(atoms,   atoms + natm,   p_atoms[tid].begin());
+			std::copy(residue, residue + nres, p_res[tid].begin());
+			for (int o = 0; o < nopt; ++o) {
+				p_optres[tid][o].cf.com    = 0.0;
+				p_optres[tid][o].cf.wal    = 0.0;
+				p_optres[tid][o].cf.sas    = 0.0;
+				p_optres[tid][o].cf.totsas = 0.0;
+				p_optres[tid][o].cf.con    = 0.0;
+				p_optres[tid][o].cf.rclash = 0;
+			}
+			p_vc[tid].numcarec = 0;
+
+			chrom[i].cf = eval_chromosome(
+			    &p_fa[tid], GB, &p_vc[tid], gene_lim,
+			    p_atoms[tid].data(), p_res[tid].data(),
+			    cleftgrid, chrom[i].genes, target);
+			chrom[i].evalue     = get_cf_evalue(&chrom[i].cf);
+			chrom[i].app_evalue = get_apparent_cf_evalue(&chrom[i].cf);
+			chrom[i].status     = 'n';
+		}
 	}
 
 	// sort and calculate fitness
@@ -1918,16 +2237,23 @@ void print_chrom(const gene* genes, int num_genes, int real_flag){
  ********************************************************************************/
 
 double calc_rmsp(int npar, const gene* g1, const gene* g2, const optmap* map_par, gridpoint* cleftgrid){
-	double rmsp=0.0;
-	int i;
-
-	for(i=0;i<npar;i++){
-		rmsp += (g1[i].to_ic-g2[i].to_ic)*(g1[i].to_ic-g2[i].to_ic);
-	}
-
-	rmsp /= (double)npar;
-
-	return sqrt(rmsp);
+#ifdef FLEXAIDS_HAS_EIGEN
+	// Vectorised RMSP using Eigen strided Map over the to_ic field.
+	// gene_struct lays out {int32_t to_int32; double to_ic}, so stride = sizeof(gene).
+	using EMap = Eigen::Map<const Eigen::VectorXd,
+	                        Eigen::Unaligned,
+	                        Eigen::InnerStride<sizeof(gene)/sizeof(double)>>;
+	// to_ic is the second field; offset by one int32_t (4 bytes / 8 bytes per double = 0.5 — not aligned).
+	// Fall back to a plain gather instead to avoid alignment issues.
+	Eigen::VectorXd diff(npar);
+	for (int ii = 0; ii < npar; ++ii) diff[ii] = g1[ii].to_ic - g2[ii].to_ic;
+	return std::sqrt(diff.squaredNorm() / (double)npar);
+#else
+	double rmsp = 0.0;
+	for(int i = 0; i < npar; ++i)
+		rmsp += (g1[i].to_ic - g2[i].to_ic) * (g1[i].to_ic - g2[i].to_ic);
+	return sqrt(rmsp / (double)npar);
+#endif
 }
 
 double genetoic(const genlim* gene_lim, int32_t gene){

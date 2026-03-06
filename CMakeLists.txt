@@ -16,14 +16,36 @@ if(POLICY CMP0167)
 endif()
 
 # ─── options ──────────────────────────────────────────────────────────────────
-option(FLEXAIDS_USE_CUDA   "Enable CUDA GPU evaluation"          OFF)
-option(FLEXAIDS_USE_METAL  "Enable Metal GPU acceleration"       OFF)
-option(FLEXAIDS_USE_AVX2   "Enable AVX2 SIMD acceleration"       ON)
-option(FLEXAIDS_USE_OPENMP "Enable OpenMP thread parallelism"    ON)
+option(FLEXAIDS_USE_CUDA    "Enable CUDA GPU evaluation"          OFF)
+option(FLEXAIDS_USE_METAL   "Enable Metal GPU acceleration"       OFF)
+option(FLEXAIDS_USE_AVX2    "Enable AVX2 SIMD acceleration"       ON)
+option(FLEXAIDS_USE_AVX512  "Enable AVX-512 SIMD acceleration"    OFF)
+option(FLEXAIDS_USE_OPENMP  "Enable OpenMP thread parallelism"    ON)
+option(FLEXAIDS_USE_EIGEN   "Enable Eigen3 vectorised linear algebra" ON)
 
 # ─── OpenMP ───────────────────────────────────────────────────────────────────
 if(FLEXAIDS_USE_OPENMP)
     find_package(OpenMP)
+endif()
+
+# ─── Eigen3 (header-only; optional but strongly recommended) ──────────────────
+if(FLEXAIDS_USE_EIGEN)
+    find_package(Eigen3 3.4 QUIET NO_MODULE)
+    if(Eigen3_FOUND)
+        message(STATUS "Eigen3 ${Eigen3_VERSION} found — enabling vectorised entropy/geometry")
+    else()
+        # Try pkg-config fallback
+        find_package(PkgConfig QUIET)
+        if(PKG_CONFIG_FOUND)
+            pkg_check_modules(EIGEN3 QUIET eigen3)
+        endif()
+        if(EIGEN3_FOUND)
+            message(STATUS "Eigen3 found via pkg-config")
+        else()
+            message(STATUS "Eigen3 not found — scalar fallback will be used (install libeigen3-dev for acceleration)")
+            set(FLEXAIDS_USE_EIGEN OFF)
+        endif()
+    endif()
 endif()
 
 # ─── CUDA (optional) ─────────────────────────────────────────────────────────
@@ -121,21 +143,52 @@ target_sources(FlexAID PRIVATE
         # ── new C++20 modules ���─
         LIB/tencm.cpp
         LIB/statmech.cpp
+        # ── v1.5 thermodynamic + hardware acceleration modules ──
+        LIB/ShannonThermoStack/ShannonThermoStack.cpp
+        LIB/LigandRingFlex/RingConformerLibrary.cpp
+        LIB/LigandRingFlex/SugarPucker.cpp
+        LIB/LigandRingFlex/LigandRingFlex.cpp
+        LIB/NATURaL/NATURaLDualAssembly.cpp
+        LIB/NATURaL/RibosomeElongation.cpp
+        LIB/NATURaL/TransloconInsertion.cpp
+        LIB/ChiralCenter/ChiralCenterGene.cpp
 )
 
-target_include_directories(FlexAID PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+target_include_directories(FlexAID PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+    ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
+    ${CMAKE_CURRENT_SOURCE_DIR}/LIB/LigandRingFlex
+    ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
+    ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ChiralCenter
+)
 
 # ─── compiler flags ──────────────────────────────────────────────────────────
 if(MSVC)
     target_compile_options(FlexAID PRIVATE /W4 /O2 /MT)
-    if(FLEXAIDS_USE_AVX2)
+    if(FLEXAIDS_USE_AVX512)
+        target_compile_options(FlexAID PRIVATE /arch:AVX512)
+    elseif(FLEXAIDS_USE_AVX2)
         target_compile_options(FlexAID PRIVATE /arch:AVX2)
     endif()
 else()
-    target_compile_options(FlexAID PRIVATE -Wall -O3)
-    if(FLEXAIDS_USE_AVX2)
+    target_compile_options(FlexAID PRIVATE -Wall -O3 -ffast-math)
+    if(FLEXAIDS_USE_AVX512)
+        # AVX-512 supersedes AVX2; include both for compatibility with mixed intrinsics
+        target_compile_options(FlexAID PRIVATE -mavx512f -mavx512dq -mavx512bw -mavx2 -mfma)
+        target_compile_definitions(FlexAID PRIVATE FLEXAIDS_USE_AVX512)
+        message(STATUS "AVX-512 enabled (mavx512f + mavx512dq + mavx512bw)")
+    elseif(FLEXAIDS_USE_AVX2)
         target_compile_options(FlexAID PRIVATE -mavx2 -mfma)
     endif()
+endif()
+
+# ─── Eigen3 link + definition ─────────────────────────────────────────────────
+if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+    target_link_libraries(FlexAID PRIVATE Eigen3::Eigen)
+    target_compile_definitions(FlexAID PRIVATE FLEXAIDS_HAS_EIGEN)
+elseif(FLEXAIDS_USE_EIGEN AND EIGEN3_FOUND)
+    target_include_directories(FlexAID PRIVATE ${EIGEN3_INCLUDE_DIRS})
+    target_compile_definitions(FlexAID PRIVATE FLEXAIDS_HAS_EIGEN)
 endif()
 
 # ─── OpenMP link ──────────────────────────────────────────────────────────────
@@ -145,12 +198,16 @@ endif()
 
 # ─── CUDA sources ─────────────────────────────────────────────────────────────
 if(FLEXAIDS_USE_CUDA)
-    target_sources(FlexAID PRIVATE LIB/cuda_eval.cu)
+    target_sources(FlexAID PRIVATE
+        LIB/cuda_eval.cu                          # existing CF batch kernel
+        LIB/ShannonThermoStack/shannon_cuda.cu    # Shannon entropy histogram kernel
+    )
     target_compile_definitions(FlexAID PRIVATE FLEXAIDS_USE_CUDA)
     set_target_properties(FlexAID PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_STANDARD 17)
     target_link_libraries(FlexAID PRIVATE CUDA::cudart)
+    message(STATUS "CUDA enabled — CF batch kernel + Shannon histogram kernel")
 endif()
 
 # ─── Metal sources ────────────────────────────────────────────────────────────
@@ -167,4 +224,37 @@ if(FLEXAIDS_USE_METAL)
         LANGUAGE OBJCXX
         COMPILE_FLAGS "-std=c++20 -fno-objc-arc"
     )
+    # Shannon Metal GPU bridge (Apple Silicon Shannon entropy histogram)
+    target_sources(FlexAID PRIVATE LIB/ShannonThermoStack/ShannonMetalBridge.mm)
+    target_compile_definitions(FlexAID PRIVATE ENABLE_METAL_CORE)
+    set_source_files_properties(LIB/ShannonThermoStack/ShannonMetalBridge.mm PROPERTIES
+        LANGUAGE OBJCXX
+        COMPILE_FLAGS "-std=c++20 -fno-objc-arc"
+    )
+endif()
+
+# ─── TeNCoM benchmark (optional standalone binary) ────────────────────────────
+option(ENABLE_TENCOM_BENCHMARK "Build the TeNCoM benchmark binary" OFF)
+if(ENABLE_TENCOM_BENCHMARK)
+    add_executable(benchmark_tencom
+        LIB/benchmark_tencom.cpp
+        LIB/tencm.cpp
+        LIB/statmech.cpp
+    )
+    target_include_directories(benchmark_tencom PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_compile_options(benchmark_tencom PRIVATE -O3 -march=native -ffast-math)
+    if(FLEXAIDS_USE_AVX512)
+        target_compile_options(benchmark_tencom PRIVATE -mavx512f -mavx512dq -mavx2 -mfma)
+        target_compile_definitions(benchmark_tencom PRIVATE FLEXAIDS_USE_AVX512)
+    elseif(FLEXAIDS_USE_AVX2)
+        target_compile_options(benchmark_tencom PRIVATE -mavx2 -mfma)
+    endif()
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(benchmark_tencom PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+        target_link_libraries(benchmark_tencom PRIVATE Eigen3::Eigen)
+        target_compile_definitions(benchmark_tencom PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
+    message(STATUS "TeNCoM benchmark enabled — build target: benchmark_tencom")
 endif()

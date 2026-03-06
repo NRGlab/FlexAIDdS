@@ -1,19 +1,20 @@
-// cuda_eval.cu — CUDA batched chromosome evaluation kernels
+// cuda_eval.cu — Full-fidelity CUDA batched chromosome evaluation kernels
 //
 // Architecture:
-//   Grid:  pop_size blocks  (one chromosome per block)
-//   Block: 256 threads      (cooperative reduction over atom pairs)
+//   Grid:  pop_size threadblocks  (one chromosome per block)
+//   Block: 256 threads            (cooperative reduction over atom pairs)
 //
 // Each block:
-//   1. Loads its chromosome's gene vector into shared memory
-//   2. Threads cooperatively compute pairwise contact areas / distances
-//      for the ligand-optimised residues against all protein atoms
-//   3. Accumulates complementarity function (CF) per atom pair
-//   4. Block-level warp-shuffle reduction → single CF value per chromosome
-//
-// This is a simplified "scoring-only" GPU path: it assumes Cartesian
-// coordinates have already been built on the host (or in a prior kernel)
-// and evaluates pairwise distance-based CF contributions on device.
+//   1. Loads its chromosome's first-three gene values (tx,ty,tz) into shared.
+//   2. Initialises per-ligand SAS counters in shared memory.
+//   3. Threads cooperatively evaluate all ligand-protein atom pairs:
+//        a. Normalised contact area via linear switching function.
+//        b. COM: energy-matrix lookup via sampled density-function table.
+//        c. WAL: KWALL × (r⁻¹² − (perm·rAB)⁻¹²) for clashing pairs.
+//        d. SAS: atomicAdd into shared per-ligand SAS counter.
+//   4. SAS energy contribution computed per ligand atom using the
+//      solvent column (T-1) of the energy matrix.
+//   5. Warp-shuffle + shared-memory reduction → three CF scalars per chromosome.
 
 #ifdef FLEXAIDS_USE_CUDA
 
@@ -24,144 +25,195 @@
 #include <cstdlib>
 #include <cmath>
 
-// ─── error checking macro ────────────────────────────────────────────────────
-#define CUDA_CHECK(call) do {                                           \
-    cudaError_t err = (call);                                           \
-    if (err != cudaSuccess) {                                           \
-        fprintf(stderr, "CUDA error %s:%d: %s\n", __FILE__, __LINE__,  \
-                cudaGetErrorString(err));                               \
-        exit(EXIT_FAILURE);                                             \
-    }                                                                   \
-} while(0)
+// ─── error-checking macro ─────────────────────────────────────────────────────
+#define CUDA_CHECK(call) do {                                             \
+    cudaError_t _e = (call);                                              \
+    if (_e != cudaSuccess) {                                              \
+        fprintf(stderr, "CUDA error %s:%d  %s\n", __FILE__, __LINE__,    \
+                cudaGetErrorString(_e));                                  \
+        exit(EXIT_FAILURE);                                               \
+    }                                                                     \
+} while (0)
 
-// ─── device constants ────────────────────────────────────────────────────────
-static constexpr int BLOCK_SIZE = 256;
+// ─── constants ────────────────────────────────────────────────────────────────
+static constexpr int   BLOCK_SIZE     = 256;
+static constexpr int   N_EMAT_SAMPLES = 128;   // must match CUDA_EMAT_SAMPLES in .cuh
+static constexpr float Rw             = 1.4f;  // water probe radius (Å)
+static constexpr float KWALL_F        = 1.0e6f;
 
-// ─── context structure ───────────────────────────────────────────────────────
+// Maximum ligand atoms handled in shared-memory SAS accumulator.
+// Ligands with more atoms fall back to zero SAS contribution.
+static constexpr int MAX_LIG_SAS = 256;
+
+// ─── context ─────────────────────────────────────────────────────────────────
 struct CudaEvalCtx {
-    // Device arrays
     float*  d_atom_xyz;      // [n_atoms × 3]
     int*    d_atom_type;     // [n_atoms]
     float*  d_atom_radius;   // [n_atoms]
-    float*  d_emat;          // [n_types × n_types]
+    float*  d_emat_sampled;  // [n_types × n_types × N_EMAT_SAMPLES]
     double* d_genes;         // [max_pop × max_genes]
-    double* d_cf_out;        // [max_pop]
+    double* d_com_out;       // [max_pop]
+    double* d_wal_out;       // [max_pop]
+    double* d_sas_out;       // [max_pop]
 
-    int n_atoms;
-    int n_types;
-    int max_pop;
-
-    // Ligand atom range and VdW permeability (from FA_Global)
-    int   lig_first;  // 0-based index of first ligand atom
-    int   lig_last;   // 0-based index of last ligand atom
-    float perm;       // van-der-Waals permeability
+    int   n_atoms;
+    int   n_types;
+    int   max_pop;
+    int   lig_first;
+    int   lig_last;
+    float perm;
 };
 
-// ─── pairwise CF kernel ──────────────────────────────────────────────────────
-//
-// Simplified scoring: for each chromosome c, compute
-//   CF(c) = Σ_{i<j} E(type_i, type_j) * contact_weight(r_ij)
-// where contact_weight is a soft switching function around
-// the sum of atomic radii.
-//
-// The gene vector encodes a rigid-body transform (tx,ty,tz,rx,ry,rz)
-// applied to the ligand atoms.  For this kernel we assume the host has
-// already built the transformed coordinates and uploaded them as
-// per-chromosome coordinate offsets in d_genes[c * n_genes + 0..5].
-
-__device__ float soft_contact(float r2, float rsum, float perm) {
-    // Smooth switching function: 1 at r=rsum, decays to 0 at r >> rsum
-    float rcut2 = rsum * rsum * perm * perm;
-    if (r2 > rcut2 * 4.0f) return 0.0f;     // beyond cutoff
-    float ratio2 = r2 / rcut2;
-    if (ratio2 < 1.0f) {
-        // Clash region: LJ-like wall  → return large positive (penalty)
-        float inv_r6 = 1.0f / (ratio2 * ratio2 * ratio2);
-        return 1e6f * (inv_r6 - 1.0f);
-    }
-    // Attractive region: Gaussian-like decay
-    return expf(-2.0f * (ratio2 - 1.0f));
+// ─── device helper: interpolated energy-matrix lookup ────────────────────────
+__device__ __forceinline__ float gpu_get_yval(
+        const float* __restrict__ emat_sampled,
+        int t1, int t2, int T, float rel_area)
+{
+    int   base = (t1 * T + t2) * N_EMAT_SAMPLES;
+    rel_area   = fmaxf(0.0f, fminf(1.0f, rel_area));
+    float kf   = rel_area * (N_EMAT_SAMPLES - 1.0f);
+    int   k0   = (int)kf;
+    int   k1   = min(k0 + 1, N_EMAT_SAMPLES - 1);
+    float frac = kf - (float)k0;
+    return emat_sampled[base + k0] * (1.0f - frac)
+         + emat_sampled[base + k1] * frac;
 }
 
-__global__ void kernel_eval_cf(
-    const float*  __restrict__ atom_xyz,     // [N × 3]
-    const int*    __restrict__ atom_type,    // [N]
-    const float*  __restrict__ atom_radius,  // [N]
-    const float*  __restrict__ emat,         // [T × T]
-    const double* __restrict__ genes,        // [pop × n_genes]
-    double*       __restrict__ cf_out,       // [pop]
-    int N,          // n_atoms
-    int T,          // n_types
-    int n_genes,
-    int lig_first,  // first ligand atom index
-    int lig_last,   // last ligand atom index
-    float perm)     // permeability
+// ─── full-fidelity CF kernel ──────────────────────────────────────────────────
+__global__ void kernel_eval_cf_full(
+    const float*  __restrict__ atom_xyz,       // [N × 3]
+    const int*    __restrict__ atom_type,      // [N]
+    const float*  __restrict__ atom_radius,    // [N]
+    const float*  __restrict__ emat_sampled,   // [T × T × N_EMAT_SAMPLES]
+    const double* __restrict__ genes,          // [pop × n_genes]
+    double*       __restrict__ com_out,        // [pop]
+    double*       __restrict__ wal_out,        // [pop]
+    double*       __restrict__ sas_out,        // [pop]
+    int N, int T, int n_genes,
+    int lig_first, int lig_last, float perm)
 {
-    int chrom_id = blockIdx.x;
-    int tid      = threadIdx.x;
+    const int chrom_id = blockIdx.x;
+    const int tid      = threadIdx.x;
 
-    // Each chromosome's rigid-body offset (simplified: 3 translations)
+    // Translation from genes (first three genes encode tx, ty, tz).
     __shared__ float tx, ty, tz;
     if (tid == 0) {
-        tx = static_cast<float>(genes[chrom_id * n_genes + 0]);
-        ty = static_cast<float>(genes[chrom_id * n_genes + 1]);
-        tz = static_cast<float>(genes[chrom_id * n_genes + 2]);
+        tx = (float)genes[chrom_id * n_genes + 0];
+        ty = (float)genes[chrom_id * n_genes + 1];
+        tz = (float)genes[chrom_id * n_genes + 2];
+    }
+
+    // Per-ligand SAS accumulator (shared memory, initialised to 4π(rA+Rw)²).
+    __shared__ float lig_sas[MAX_LIG_SAS];
+    const int n_lig = lig_last - lig_first + 1;
+    const int n_pro = N - n_lig;
+    for (int la = tid; la < n_lig && la < MAX_LIG_SAS; la += BLOCK_SIZE) {
+        float rwa     = atom_radius[lig_first + la] + Rw;
+        lig_sas[la]   = 4.0f * 3.141592653589793f * rwa * rwa;
     }
     __syncthreads();
 
-    // Number of ligand atoms
-    int n_lig = lig_last - lig_first + 1;
-    // Total protein-ligand pairs to evaluate
-    int n_pairs = n_lig * (N - n_lig);
+    // ── pair loop ────────────────────────────────────────────────────────────
+    const int n_pairs = n_lig * n_pro;
+    float local_com = 0.0f, local_wal = 0.0f;
 
-    float local_cf = 0.0f;
+    for (int pr = tid; pr < n_pairs; pr += BLOCK_SIZE) {
+        const int li      = pr / n_pro;
+        const int pro_rel = pr % n_pro;
+        const int ai      = lig_first + li;
+        const int aj      = (pro_rel < lig_first) ? pro_rel : (pro_rel + n_lig);
 
-    // Stride through atom pairs
-    for (int p = tid; p < n_pairs; p += BLOCK_SIZE) {
-        int lig_idx = p / (N - n_lig);      // which ligand atom (relative)
-        int pro_rel = p % (N - n_lig);       // which protein atom (relative)
+        // Ligand atom position with translation applied.
+        const float lx = atom_xyz[ai * 3 + 0] + tx;
+        const float ly = atom_xyz[ai * 3 + 1] + ty;
+        const float lz = atom_xyz[ai * 3 + 2] + tz;
 
-        int ai = lig_first + lig_idx;        // absolute ligand atom index
-        int aj = (pro_rel < lig_first) ? pro_rel : (pro_rel + n_lig);  // skip ligand range
+        const float dx = lx - atom_xyz[aj * 3 + 0];
+        const float dy = ly - atom_xyz[aj * 3 + 1];
+        const float dz = lz - atom_xyz[aj * 3 + 2];
+        const float r  = sqrtf(dx*dx + dy*dy + dz*dz + 1e-10f);
 
-        // Ligand atom position with translation applied
-        float lx = atom_xyz[ai * 3 + 0] + tx;
-        float ly = atom_xyz[ai * 3 + 1] + ty;
-        float lz = atom_xyz[ai * 3 + 2] + tz;
+        const float rA    = atom_radius[ai];
+        const float rB    = atom_radius[aj];
+        const float rsum  = rA + rB;
+        const float rwa_A = rA + Rw;
+        const float surf_A = 4.0f * 3.141592653589793f * rwa_A * rwa_A;
+        const float outer_r = rsum + 2.0f * Rw;  // rA + rB + 2·Rw
 
-        float dx = lx - atom_xyz[aj * 3 + 0];
-        float dy = ly - atom_xyz[aj * 3 + 1];
-        float dz = lz - atom_xyz[aj * 3 + 2];
-        float r2 = dx*dx + dy*dy + dz*dz;
+        // Normalised contact area: linear from 1 at r=rsum to 0 at r=outer_r.
+        float rel_area = 0.0f;
+        if      (r < rsum)    rel_area = 1.0f;
+        else if (r < outer_r) rel_area = 1.0f - (r - rsum) / (outer_r - rsum);
 
-        float rsum = atom_radius[ai] + atom_radius[aj];
-        float cw = soft_contact(r2, rsum, perm);
+        // Subtract contact area from this ligand atom's SAS counter.
+        if (rel_area > 0.0f && li < MAX_LIG_SAS) {
+            atomicAdd(&lig_sas[li], -rel_area * surf_A);
+        }
 
-        // Energy-matrix lookup
-        int ti = atom_type[ai];
-        int tj = atom_type[aj];
-        float e_ij = emat[ti * T + tj];
+        // COM: energy-matrix interpolation scaled by normalised contact area.
+        const int   ti   = atom_type[ai];
+        const int   tj   = atom_type[aj];
+        const float yval = gpu_get_yval(emat_sampled, ti, tj, T, rel_area);
+        local_com += yval * rel_area;
 
-        local_cf += e_ij * cw;
+        // WAL: repulsive wall energy when r < perm × (rA+rB).
+        const float clash_r = perm * rsum;
+        if (r < clash_r) {
+            const float inv_r12  = 1.0f / powf(r,       12.0f);
+            const float inv_cr12 = 1.0f / powf(clash_r, 12.0f);
+            local_wal += KWALL_F * (inv_r12 - inv_cr12);
+        }
     }
-
-    // Warp-level reduction
-    for (int offset = warpSize / 2; offset > 0; offset >>= 1)
-        local_cf += __shfl_down_sync(0xFFFFFFFF, local_cf, offset);
-
-    // Shared-memory reduction across warps
-    __shared__ float warp_sums[BLOCK_SIZE / 32];
-    int lane   = tid % 32;
-    int warp_id = tid / 32;
-    if (lane == 0) warp_sums[warp_id] = local_cf;
+    // Pair loop done; ensure all atomicAdds to lig_sas are visible.
     __syncthreads();
 
-    // First warp reduces the warp sums
-    if (warp_id == 0) {
-        float val = (tid < (BLOCK_SIZE / 32)) ? warp_sums[tid] : 0.0f;
-        for (int offset = (BLOCK_SIZE / 32) / 2; offset > 0; offset >>= 1)
-            val += __shfl_down_sync(0xFFFFFFFF, val, offset);
-        if (tid == 0) cf_out[chrom_id] = static_cast<double>(val);
+    // ── warp-level reduction for COM and WAL ─────────────────────────────────
+    for (int off = warpSize / 2; off > 0; off >>= 1) {
+        local_com += __shfl_down_sync(0xFFFFFFFF, local_com, off);
+        local_wal += __shfl_down_sync(0xFFFFFFFF, local_wal, off);
+    }
+    __shared__ float warp_com[BLOCK_SIZE / 32];
+    __shared__ float warp_wal[BLOCK_SIZE / 32];
+    const int lane = tid % 32, wid = tid / 32;
+    if (lane == 0) { warp_com[wid] = local_com; warp_wal[wid] = local_wal; }
+    __syncthreads();
+
+    // ── SAS contribution (per ligand atom) ───────────────────────────────────
+    float local_sas = 0.0f;
+    if (n_lig <= MAX_LIG_SAS) {
+        for (int la = tid; la < n_lig; la += BLOCK_SIZE) {
+            const float sas_rem  = fmaxf(0.0f, lig_sas[la]);
+            const float rwa_la   = atom_radius[lig_first + la] + Rw;
+            const float surf_la  = 4.0f * 3.141592653589793f * rwa_la * rwa_la;
+            const float sas_norm = sas_rem / surf_la;
+            const int   ti_la    = atom_type[lig_first + la];
+            // Solvent interaction: last column of the energy matrix (index T-1).
+            const float yval_sas = gpu_get_yval(emat_sampled, ti_la, T - 1, T, sas_norm);
+            local_sas += yval_sas * sas_norm;
+        }
+    }
+    for (int off = warpSize / 2; off > 0; off >>= 1)
+        local_sas += __shfl_down_sync(0xFFFFFFFF, local_sas, off);
+    __shared__ float warp_sas[BLOCK_SIZE / 32];
+    if (lane == 0) warp_sas[wid] = local_sas;
+    __syncthreads();
+
+    // ── final cross-warp reduction (warp 0 only) ─────────────────────────────
+    if (wid == 0) {
+        const int nwarps = BLOCK_SIZE / 32;
+        float vcom = (lane < nwarps) ? warp_com[lane] : 0.0f;
+        float vwal = (lane < nwarps) ? warp_wal[lane] : 0.0f;
+        float vsas = (lane < nwarps) ? warp_sas[lane] : 0.0f;
+        for (int off = nwarps / 2; off > 0; off >>= 1) {
+            vcom += __shfl_down_sync(0xFFFFFFFF, vcom, off);
+            vwal += __shfl_down_sync(0xFFFFFFFF, vwal, off);
+            vsas += __shfl_down_sync(0xFFFFFFFF, vsas, off);
+        }
+        if (lane == 0) {
+            com_out[chrom_id] = (double)vcom;
+            wal_out[chrom_id] = (double)vwal;
+            sas_out[chrom_id] = (double)vsas;
+        }
     }
 }
 
@@ -176,7 +228,7 @@ CudaEvalCtx* cuda_eval_init(int   n_atoms,
                              const float* h_atom_xyz,
                              const int*   h_atom_type,
                              const float* h_atom_radius,
-                             const float* h_emat)
+                             const float* h_emat_sampled)
 {
     CudaEvalCtx* ctx = new CudaEvalCtx;
     ctx->n_atoms   = n_atoms;
@@ -186,72 +238,78 @@ CudaEvalCtx* cuda_eval_init(int   n_atoms,
     ctx->lig_last  = lig_last;
     ctx->perm      = perm;
 
-    size_t xyz_bytes    = static_cast<size_t>(n_atoms) * 3 * sizeof(float);
-    size_t type_bytes   = static_cast<size_t>(n_atoms) * sizeof(int);
-    size_t radius_bytes = static_cast<size_t>(n_atoms) * sizeof(float);
-    size_t emat_bytes   = static_cast<size_t>(n_types) * n_types * sizeof(float);
-    size_t gene_bytes   = static_cast<size_t>(max_pop) * 256 * sizeof(double); // generous gene buffer
-    size_t cf_bytes     = static_cast<size_t>(max_pop) * sizeof(double);
+    const size_t xyz_bytes  = (size_t)n_atoms * 3          * sizeof(float);
+    const size_t type_bytes = (size_t)n_atoms               * sizeof(int);
+    const size_t rad_bytes  = (size_t)n_atoms               * sizeof(float);
+    const size_t em_bytes   = (size_t)n_types * n_types * N_EMAT_SAMPLES * sizeof(float);
+    const size_t gene_bytes = (size_t)max_pop * 256          * sizeof(double);
+    const size_t cf_bytes   = (size_t)max_pop               * sizeof(double);
 
-    CUDA_CHECK(cudaMalloc(&ctx->d_atom_xyz,    xyz_bytes));
-    CUDA_CHECK(cudaMalloc(&ctx->d_atom_type,   type_bytes));
-    CUDA_CHECK(cudaMalloc(&ctx->d_atom_radius, radius_bytes));
-    CUDA_CHECK(cudaMalloc(&ctx->d_emat,        emat_bytes));
-    CUDA_CHECK(cudaMalloc(&ctx->d_genes,       gene_bytes));
-    CUDA_CHECK(cudaMalloc(&ctx->d_cf_out,      cf_bytes));
+    CUDA_CHECK(cudaMalloc(&ctx->d_atom_xyz,     xyz_bytes));
+    CUDA_CHECK(cudaMalloc(&ctx->d_atom_type,    type_bytes));
+    CUDA_CHECK(cudaMalloc(&ctx->d_atom_radius,  rad_bytes));
+    CUDA_CHECK(cudaMalloc(&ctx->d_emat_sampled, em_bytes));
+    CUDA_CHECK(cudaMalloc(&ctx->d_genes,        gene_bytes));
+    CUDA_CHECK(cudaMalloc(&ctx->d_com_out,      cf_bytes));
+    CUDA_CHECK(cudaMalloc(&ctx->d_wal_out,      cf_bytes));
+    CUDA_CHECK(cudaMalloc(&ctx->d_sas_out,      cf_bytes));
 
-    CUDA_CHECK(cudaMemcpy(ctx->d_atom_xyz,    h_atom_xyz,    xyz_bytes,    cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(ctx->d_atom_type,   h_atom_type,   type_bytes,   cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(ctx->d_atom_radius, h_atom_radius, radius_bytes, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(ctx->d_emat,        h_emat,        emat_bytes,   cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(ctx->d_atom_xyz,     h_atom_xyz,     xyz_bytes,  cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(ctx->d_atom_type,    h_atom_type,    type_bytes, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(ctx->d_atom_radius,  h_atom_radius,  rad_bytes,  cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(ctx->d_emat_sampled, h_emat_sampled, em_bytes,   cudaMemcpyHostToDevice));
 
     return ctx;
 }
 
-void cuda_eval_batch(CudaEvalCtx* ctx,
-                     int pop_size,
-                     int n_genes,
+void cuda_eval_batch(CudaEvalCtx*  ctx,
+                     int           pop_size,
+                     int           n_genes,
                      const double* h_genes,
-                     double*       h_cf_out)
+                     double*       h_com_out,
+                     double*       h_wal_out,
+                     double*       h_sas_out)
 {
-    size_t gene_bytes = static_cast<size_t>(pop_size) * n_genes * sizeof(double);
-    size_t cf_bytes   = static_cast<size_t>(pop_size) * sizeof(double);
+    const size_t gene_bytes = (size_t)pop_size * n_genes * sizeof(double);
+    const size_t cf_bytes   = (size_t)pop_size            * sizeof(double);
 
     CUDA_CHECK(cudaMemcpy(ctx->d_genes, h_genes, gene_bytes, cudaMemcpyHostToDevice));
 
-    // Launch: one block per chromosome, BLOCK_SIZE threads per block
-    int lig_first = ctx->lig_first;
-    int lig_last  = ctx->lig_last;
-    float perm    = ctx->perm;
-
-    kernel_eval_cf<<<pop_size, BLOCK_SIZE>>>(
+    kernel_eval_cf_full<<<pop_size, BLOCK_SIZE>>>(
         ctx->d_atom_xyz,
         ctx->d_atom_type,
         ctx->d_atom_radius,
-        ctx->d_emat,
+        ctx->d_emat_sampled,
         ctx->d_genes,
-        ctx->d_cf_out,
+        ctx->d_com_out,
+        ctx->d_wal_out,
+        ctx->d_sas_out,
         ctx->n_atoms,
         ctx->n_types,
         n_genes,
-        lig_first,
-        lig_last,
-        perm);
+        ctx->lig_first,
+        ctx->lig_last,
+        ctx->perm);
 
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    CUDA_CHECK(cudaMemcpy(h_cf_out, ctx->d_cf_out, cf_bytes, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_com_out, ctx->d_com_out, cf_bytes, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_wal_out, ctx->d_wal_out, cf_bytes, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_sas_out, ctx->d_sas_out, cf_bytes, cudaMemcpyDeviceToHost));
 }
 
-void cuda_eval_shutdown(CudaEvalCtx* ctx) {
+void cuda_eval_shutdown(CudaEvalCtx* ctx)
+{
     if (!ctx) return;
     cudaFree(ctx->d_atom_xyz);
     cudaFree(ctx->d_atom_type);
     cudaFree(ctx->d_atom_radius);
-    cudaFree(ctx->d_emat);
+    cudaFree(ctx->d_emat_sampled);
     cudaFree(ctx->d_genes);
-    cudaFree(ctx->d_cf_out);
+    cudaFree(ctx->d_com_out);
+    cudaFree(ctx->d_wal_out);
+    cudaFree(ctx->d_sas_out);
     delete ctx;
 }
 
