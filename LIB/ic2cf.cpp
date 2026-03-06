@@ -1,5 +1,5 @@
 #include "gaboom.h"
-#include "boinc.h"
+#include "fileio.h"
 
 #ifdef _OPENMP
 #  include <omp.h>

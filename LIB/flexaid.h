@@ -56,7 +56,9 @@
 #define MAX_CLOSE_DIST 10
 #define RMSD_THRESHOLD 2.0
 
-#define KWALL    1.0e6
+// Stiff wall potential (original FlexAID clash penalty = 1e6).
+// constexpr = type-safe, no preprocessor expansion into parameter lists.
+constexpr float KWALL = 1.0e6f;
 #define KANGLE   1.0e2
 #define KDIST    1.0e3
 #define DEE_WALL_THRESHOLD 50.0

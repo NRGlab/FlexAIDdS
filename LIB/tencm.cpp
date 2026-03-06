@@ -42,10 +42,6 @@ static void cross3f(const float* a, const float* b, float* c) noexcept {
     c[1] = a[2]*b[0] - a[0]*b[2];
     c[2] = a[0]*b[1] - a[1]*b[0];
 }
-static float dot3f(const float* a, const float* b) noexcept {
-    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
-}
-
 // ─── TorsionalENM::build ─────────────────────────────────────────────────────
 void TorsionalENM::build(const atom*  atoms,
                           const resid* residue,

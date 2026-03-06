@@ -11,8 +11,9 @@
 #include <vector>
 #include <cmath>
 
-// Forward declarations (avoid pulling in all of flexaid.h)
-struct atom;
+// Forward declarations (must match typedef in flexaid.h)
+struct atom_struct;
+typedef atom_struct atom;
 
 namespace sugar_pucker {
 

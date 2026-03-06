@@ -126,7 +126,7 @@ void apply_sugar_puckers(
         float torsions[5];
         compute_ring_torsions(pp, torsions);
         for (int k = 0; k < 5; ++k)
-            atoms[ring[k]].ic[0] = torsions[k];
+            atoms[ring[k]].dih = torsions[k];
     }
 
 #elif defined(FLEXAIDS_HAS_EIGEN)
@@ -157,7 +157,7 @@ void apply_sugar_puckers(
         float torsions[5];
         compute_ring_torsions(pp, torsions);
         for (int k = 0; k < 5; ++k)
-            atoms[ring[k]].ic[0] = torsions[k];
+            atoms[ring[k]].dih = torsions[k];
     }
 #endif
 }

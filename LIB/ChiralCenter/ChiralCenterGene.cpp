@@ -33,10 +33,9 @@ std::vector<ChiralCenter> detect_stereocenters(const atom* atoms, int n_atoms) {
     if (!atoms || n_atoms <= 0) return centers;
 
     for (int i = 0; i < n_atoms; ++i) {
-        // Check for sp3 carbon with type 'C' and 4 neighbours
-        const char* atype = atoms[i].type;
-        if (!atype) continue;
-        if (atype[0] != 'C' && atype[0] != 'c') continue;
+        // Check for sp3 carbon (element "C ") with 4 neighbours
+        const char* elem = atoms[i].element;
+        if (elem[0] != 'C' && elem[0] != 'c') continue;
 
         // Count bonded neighbours via the bond list
         // (atoms[i].bond[] stores bonded atom indices in FlexAID)
