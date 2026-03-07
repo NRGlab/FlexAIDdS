@@ -89,9 +89,15 @@ struct RingDescriptor {
     bool             is_aromatic;  // if true, skip (not sampled)
 };
 
+// Forward-declare atom struct for ring detection.
+struct atom_struct;
+
 // Detect all non-aromatic rings in the ligand atom array.
-// `n_atoms`: total atoms; `atoms_lig` points to the ligand subset.
+// `atom_indices`: ordered ligand atom indices into the global atoms[] array.
+// `n_atoms`: number of ligand atoms.
+// `atoms`: global atom array (needed to walk bond[0..bond[0]] adjacency).
 std::vector<RingDescriptor> detect_non_aromatic_rings(
-    const int* atom_indices, int n_atoms);
+    const int* atom_indices, int n_atoms,
+    const atom_struct* atoms);
 
 } // namespace ring_flex

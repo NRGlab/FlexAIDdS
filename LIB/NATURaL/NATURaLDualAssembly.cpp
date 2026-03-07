@@ -325,18 +325,30 @@ std::vector<DualAssemblyEngine::GrowthStep> DualAssemblyEngine::run() {
 }
 
 // ─── compute_partial_cf ───────────────────────────────────────────────────────
-double DualAssemblyEngine::compute_partial_cf(int n_grown_residues) const {
-    // Simplified CF estimate: each grown residue contributes an attractive
-    // contact energy. Production code calls the full cffunction()/vcfunction()
-    // pipeline (ic2cf.cpp) with the current partially-grown complex.
-    if (!FA_ || !atoms_ || !residues_) return 0.0;
+// Forward-declare cffunction (defined in cffunction.cpp, no header prototype).
+extern cfstr cffunction(FA_Global* FA, atom* atoms, resid* residue, int num);
 
-    // Scale CF by accessible surface area proxy:
-    // more residues → more surface buried → stronger (negative) CF.
-    // Using -0.1 kcal/mol/residue as a placeholder; production uses the
-    // actual FlexAID Contact Function grid evaluation.
-    double count = std::min(n_grown_residues, n_residues_);
-    return -0.1 * count; // kcal/mol (attractive)
+double DualAssemblyEngine::compute_partial_cf(int n_grown_residues) const {
+    // Evaluate the Contact Function for the partial complex by summing
+    // per-residue cffunction() scores for the first n_grown_residues residues.
+    // cffunction() computes sphere-point SAS, complementarity, wall, and
+    // constraint terms for a single residue against all other atoms.
+    if (!FA_ || !atoms_ || !residues_ || n_grown_residues <= 0) return 0.0;
+
+    int count = std::min(n_grown_residues, n_residues_);
+
+    // Sum CF components (complementarity + wall + SAS) for each grown residue.
+    // Residues beyond n_grown_residues are still present in the atom array at
+    // their original coordinates; their contributions are excluded from the sum
+    // so only the emerged partial complex is scored.
+    double total_cf = 0.0;
+    for (int r = 1; r <= count && r <= FA_->res_cnt; ++r) {
+        cfstr cf = cffunction(FA_, atoms_, residues_, r);
+        // get_cf_evalue: com + wal + sas + con
+        total_cf += cf.com + cf.wal + cf.sas + cf.con;
+    }
+
+    return total_cf;
 }
 
 // ─── compute_growth_entropy ───────────────────────────────────────────────────
