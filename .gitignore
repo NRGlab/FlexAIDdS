@@ -15,6 +15,12 @@
 !LICENSE
 !README.md
 !VERSION
+# documentation
+!CONTRIBUTING.md
+!CODE_OF_CONDUCT.md
+!THIRD_PARTY_LICENSES.md
+!docs
+!docs/**
 # dependencies files
 !*.def
 !*.dat
