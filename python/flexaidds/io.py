@@ -9,9 +9,9 @@ from .models import PoseResult
 _NUMERIC_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
 _FILE_MODE_PATTERNS = [
     re.compile(r"binding[_-]?mode[_-]?(\d+)", re.IGNORECASE),
-    re.compile(r"\bmode[_-]?(\d+)\b", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9])mode[_-]?(\d+)(?![A-Za-z0-9])", re.IGNORECASE),
     re.compile(r"cluster[_-]?(\d+)", re.IGNORECASE),
-    re.compile(r"\bbm[_-]?(\d+)\b", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9])bm[_-]?(\d+)(?![A-Za-z0-9])", re.IGNORECASE),
 ]
 _FILE_POSE_PATTERNS = [
     re.compile(r"pose[_-]?(\d+)", re.IGNORECASE),
