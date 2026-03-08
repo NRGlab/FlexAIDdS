@@ -27,6 +27,7 @@
 #include "NATURaLDualAssembly.h"
 #include "RibosomeElongation.h"
 #include "TransloconInsertion.h"
+#include "../gaboom.h"   // vcfunction / cfstr / get_apparent_cf_evalue
 
 #include <cstring>
 #include <cmath>
@@ -326,17 +327,28 @@ std::vector<DualAssemblyEngine::GrowthStep> DualAssemblyEngine::run() {
 
 // ─── compute_partial_cf ───────────────────────────────────────────────────────
 double DualAssemblyEngine::compute_partial_cf(int n_grown_residues) const {
-    // Simplified CF estimate: each grown residue contributes an attractive
-    // contact energy. Production code calls the full cffunction()/vcfunction()
-    // pipeline (ic2cf.cpp) with the current partially-grown complex.
-    if (!FA_ || !atoms_ || !residues_) return 0.0;
+    if (!FA_ || !VC_ || !atoms_ || !residues_) return 0.0;
 
-    // Scale CF by accessible surface area proxy:
-    // more residues → more surface buried → stronger (negative) CF.
-    // Using -0.1 kcal/mol/residue as a placeholder; production uses the
-    // actual FlexAID Contact Function grid evaluation.
-    double count = std::min(n_grown_residues, n_residues_);
-    return -0.1 * count; // kcal/mol (attractive)
+    // Temporarily mark grown residues as scorable and the rest as non-scorable
+    // by adjusting FA_->num_optres to cover only the grown portion.
+    // vcfunction() scores the current Cartesian atom coordinates directly —
+    // no IC → CC rebuild needed since DualAssembly keeps atoms_ in Cartesian.
+    const int saved_num_optres = FA_->num_optres;
+    const int n_score = std::min(n_grown_residues, n_residues_);
+
+    // Limit scoring to the first n_score residues (those grown so far).
+    // optres[] is ordered by residue index; trim the active count.
+    FA_->num_optres = std::min(n_score, saved_num_optres);
+
+    std::vector<std::pair<int,int>> intraclashes;
+    bool error = false;
+    double cf_val = vcfunction(FA_, VC_, atoms_, residues_, intraclashes, &error);
+
+    // Restore original optres count
+    FA_->num_optres = saved_num_optres;
+
+    if (error) return 0.0;
+    return cf_val; // kcal/mol (attractive values are negative)
 }
 
 // ─── compute_growth_entropy ───────────────────────────────────────────────────
