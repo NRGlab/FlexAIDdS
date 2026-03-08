@@ -51,35 +51,6 @@ void BindingPopulation::output_Population(int nResults, char* end_strfile, char*
 	}
 }
 
-/// === NEW: Binding Population thermodynamic APIs ===
-double BindingPopulation::compute_delta_G(const BindingMode& mode1, const BindingMode& mode2) const
-{
-	// Get free energies from each mode
-	double F1 = mode1.get_free_energy();
-	double F2 = mode2.get_free_energy();
-	return F1 - F2;  // relative free energy
-}
-
-statmech::StatMechEngine BindingPopulation::get_global_ensemble() const
-{
-	statmech::StatMechEngine global_engine(this->Temperature);
-	
-	// Aggregate all modes into global ensemble
-	for (const auto& mode : this->BindingModes) {
-		const auto& weights = mode.get_boltzmann_weights();
-		const auto& poses = mode.Poses;
-		
-		if (weights.size() != poses.size()) {
-			continue;  // Safety check
-		}
-		
-		for (size_t i = 0; i < poses.size(); ++i) {
-			global_engine.add_sample(poses[i].CF, weights[i]);
-		}
-	}
-	
-	return global_engine;
-}
 
 
 /*****************************************\
@@ -104,27 +75,6 @@ void BindingMode::add_Pose(Pose& pose)
 }
 
 
-/// === NEW: Cache rebuild infrastructure (Phase 1) ===
-void BindingMode::rebuild_engine() const
-{
-	// Only rebuild if cache is dirty
-	if (thermo_cache_valid_) {
-		return;
-	}
-	
-	// Clear previous state
-	const_cast<statmech::StatMechEngine&>(engine_).clear();
-	
-	// Populate engine from all poses in this mode
-	for (const auto& pose : Poses) {
-		// Add each pose's CF energy with unit multiplicity
-		// (CF already computed via ic2cf in GA pipeline)
-		const_cast<statmech::StatMechEngine&>(engine_).add_sample(pose.CF, 1.0);
-	}
-	
-	// Mark cache as valid until next pose modification
-	const_cast<bool&>(thermo_cache_valid_) = true;
-}
 
 
 double BindingMode::compute_enthalpy() const
@@ -151,32 +101,6 @@ double BindingMode::compute_energy() const
 }
 
 
-/// === NEW: Thermodynamic APIs (Phase 1) ===
-statmech::Thermodynamics BindingMode::get_thermodynamics() const
-{
-	rebuild_engine();
-	return engine_.compute();
-	// Returns struct with: {free_energy, mean_energy, entropy, heat_capacity, energy_std}
-}
-
-
-double BindingMode::get_free_energy() const
-{
-	return get_thermodynamics().free_energy;
-}
-
-
-double BindingMode::get_heat_capacity() const
-{
-	return get_thermodynamics().heat_capacity;
-}
-
-
-std::vector<double> BindingMode::get_boltzmann_weights() const
-{
-	rebuild_engine();
-	return engine_.boltzmann_weights();  // Returns normalized weights (sum = 1.0)
-}
 
 
 double BindingMode::delta_G_relative_to(const BindingMode& reference) const

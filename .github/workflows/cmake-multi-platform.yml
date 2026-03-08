@@ -4,9 +4,8 @@ name: CMake on multiple platforms
 
 on:
   push:
-    branches: [ "claude/write-implementation-MglRZ" ]
+    branches: [ "claude/fix-ci-build-errors-FvOtk", "main", "master" ]
   pull_request:
-    branches: [ "claude/write-implementation-MglRZ" ]
 
 jobs:
   build:
