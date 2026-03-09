@@ -1,33 +1,17 @@
-name: CMake on a single platform
+name: Legacy single-platform workflow (manual only)
 
 on:
   push:
-    branches: [ "claude/fix-ci-build-errors-FvOtk", "main", "master" ]
+    branches: [ "claude/implement-pending-tasks-Ey3WM" ]
   pull_request:
+    branches: [ "claude/implement-pending-tasks-Ey3WM" ]
 
 env:
+  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
   BUILD_TYPE: Release
 
 jobs:
-  build:
+  deprecated:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Install dependencies
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y cmake build-essential libomp-dev
-
-    - name: Configure CMake
-      run: |
-        cmake -B ${{github.workspace}}/build \
-              -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
-              -DCMAKE_CXX_STANDARD=20 \
-              -DCMAKE_CXX_STANDARD_REQUIRED=ON \
-              -DCMAKE_CXX_EXTENSIONS=OFF \
-              -DFLEXAIDS_USE_OPENMP=ON
-
-    - name: Build
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel $(nproc)
+      - run: echo 'Deprecated workflow. Use .github/workflows/ci.yml instead.'
