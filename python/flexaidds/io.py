@@ -17,10 +17,10 @@ def _filename_token_pattern(token: str) -> re.Pattern[str]:
 
 
 _FILE_MODE_PATTERNS = [
-    _filename_token_pattern(r"binding[_-]?mode"),
-    _filename_token_pattern("mode"),
-    _filename_token_pattern("cluster"),
-    _filename_token_pattern("bm"),
+    re.compile(r"binding[_-]?mode[_-]?(\d+)", re.IGNORECASE),
+    re.compile(r"\bmode[_-]?(\d+)(?!\d)", re.IGNORECASE),
+    re.compile(r"cluster[_-]?(\d+)", re.IGNORECASE),
+    re.compile(r"\bbm[_-]?(\d+)(?!\d)", re.IGNORECASE),
 ]
 _FILE_POSE_PATTERNS = [
     _filename_token_pattern("pose"),

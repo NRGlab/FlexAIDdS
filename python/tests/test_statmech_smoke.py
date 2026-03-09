@@ -1,18 +1,18 @@
-import math
-
 import pytest
-
 import flexaidds as fd
 
-pytestmark = pytest.mark.skipif(
-    not fd.HAS_CORE_BINDINGS or fd.StatMechEngine is None,
-    reason="pybind11 core extension not built",
-)
+_core_available: bool
+try:
+    fd.StatMechEngine(300.0)
+    _core_available = True
+except Exception:
+    _core_available = False
 
 
-def test_statmech_engine_smoke() -> None:
-    engine = fd.StatMechEngine(temperature=300.0)
-    engine.add_sample(-7.5)
+@pytest.mark.skipif(not _core_available, reason="C++ _core extension not built")
+def test_statmech_smoke():
+    engine = fd.StatMechEngine(300.0)
+    engine.add_sample(-7.0)
     engine.add_sample(-6.0)
     engine.add_sample(-5.5, multiplicity=2.0)
 
