@@ -46,18 +46,23 @@ from .docking import (
     BindingPopulation,
 )
 
-# ENCoM vibrational entropy — exposed directly from compiled C++ extension
-# (NormalMode, VibrationalEntropy, ENCoMEngine live in _core)
-if _core is not None:
-    from ._core import (
-        NormalMode,
-        VibrationalEntropy,
-        ENCoMEngine,
-    )
-else:
-    NormalMode = None
-    VibrationalEntropy = None
-    ENCoMEngine = None
+# ENCoM vibrational entropy — Python wrapper with optional C++ acceleration
+from .encom import (
+    NormalMode,
+    VibrationalEntropy,
+    ENCoMEngine,
+)
+
+# File I/O utilities
+from .io import (
+    Atom,
+    read_pdb,
+    write_pdb,
+    RRDPose,
+    read_rrd,
+    Mol2Atom,
+    read_mol2,
+)
 
 __all__ = [
     "__version__",
@@ -69,8 +74,16 @@ __all__ = [
     "Docking",
     "BindingMode",
     "BindingPopulation",
-    # ENCoM (Phase 3)
+    # ENCoM
     "NormalMode",
     "VibrationalEntropy",
     "ENCoMEngine",
+    # I/O
+    "Atom",
+    "read_pdb",
+    "write_pdb",
+    "RRDPose",
+    "read_rrd",
+    "Mol2Atom",
+    "read_mol2",
 ]

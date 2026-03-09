@@ -21,6 +21,9 @@
 !THIRD_PARTY_LICENSES.md
 !docs
 !docs/**
+# python package
+!python
+!python/**
 # dependencies files
 !*.def
 !*.dat
