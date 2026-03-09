@@ -1,11 +1,13 @@
 """flexaidds: Python bindings and read-only analysis helpers for FlexAID∆S."""
 
 try:
-    from ._core import StatMechEngine, Thermodynamics
+    from ._core import StatMechEngine as _CppStatMechEngine
+    from ._core import Thermodynamics as _CppThermodynamics  # noqa: F401
 except ImportError:
-    StatMechEngine = None  # type: ignore[assignment,misc]
-    Thermodynamics = None  # type: ignore[assignment,misc]
+    _CppStatMechEngine = None  # type: ignore[assignment]
+    _CppThermodynamics = None  # type: ignore[assignment]
 
+from .thermodynamics import StatMechEngine, Thermodynamics
 from .models import BindingModeResult, DockingResult, PoseResult
 from .results import load_results
 
