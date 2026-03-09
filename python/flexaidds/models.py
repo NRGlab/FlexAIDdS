@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import csv
+import io
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 
 @dataclass(frozen=True)
@@ -100,3 +102,32 @@ class DockingResult:
                 "pandas is required for DockingResult.to_dataframe(); use to_records() instead."
             ) from exc
         return pd.DataFrame(self.to_records())
+
+    def to_csv(self, path: Union[str, Path, None] = None) -> Optional[str]:
+        """Write binding mode summary to CSV.
+
+        Args:
+            path: Destination file path.  When *None* the CSV text is returned
+                  as a string instead of being written to disk.
+
+        Returns:
+            CSV text when *path* is ``None``, otherwise ``None``.
+        """
+        records = self.to_records()
+        if not records:
+            fieldnames: List[str] = []
+        else:
+            fieldnames = list(records[0].keys())
+
+        if path is None:
+            buf = io.StringIO()
+            writer = csv.DictWriter(buf, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(records)
+            return buf.getvalue()
+
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(records)
+        return None
