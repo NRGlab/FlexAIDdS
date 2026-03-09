@@ -238,7 +238,7 @@ class TestDockingResultToRecords:
 
 
 # ===========================================================================
-# DockingResult.to_dataframe – pandas import error path
+# DockingResult.to_dataframe – success path and pandas import error path
 # ===========================================================================
 
 class TestDockingResultToDataframe:
@@ -259,3 +259,21 @@ class TestDockingResultToDataframe:
         )
         with pytest.raises(ImportError, match="pandas"):
             result.to_dataframe()
+
+    def test_to_dataframe_success(self):
+        pytest.importorskip("pandas")
+        poses = [_pose(path="p1.pdb", cf=-10.0)]
+        modes = [
+            BindingModeResult(
+                mode_id=1, rank=1, poses=poses,
+                free_energy=-9.8, best_cf=-10.0,
+            ),
+        ]
+        result = DockingResult(source_dir=Path("/tmp"), binding_modes=modes)
+        df = result.to_dataframe()
+        import pandas as pd
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 1
+        assert "mode_id" in df.columns
+        assert df.iloc[0]["mode_id"] == 1
+        assert df.iloc[0]["free_energy"] == pytest.approx(-9.8)

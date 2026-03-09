@@ -319,3 +319,54 @@ class TestDockingRun:
         d = Docking(str(cfg))
         with pytest.raises(NotImplementedError):
             d.run()
+
+
+# ===========================================================================
+# BindingPopulation.compute_global_thermodynamics – needs C++ core
+# ===========================================================================
+
+_core_available: bool
+try:
+    from flexaidds.thermodynamics import StatMechEngine as _SME
+    _SME(300.0)
+    _core_available = True
+except Exception:
+    _core_available = False
+
+
+@pytest.mark.skipif(not _core_available, reason="C++ _core extension not built")
+class TestComputeGlobalThermodynamics:
+    """compute_global_thermodynamics() aggregates all mode pose energies via
+    StatMechEngine and returns a Thermodynamics object."""
+
+    def _pop_with_real_modes(self) -> BindingPopulation:
+        """Return a BindingPopulation backed by real C++ BindingMode stubs.
+
+        Since we cannot easily instantiate C++ BindingMode objects here we
+        monkey-patch the BindingMode instances so that n_poses and enthalpy
+        delegate to Python values only.
+        """
+        from flexaidds.thermodynamics import Thermodynamics
+
+        pop = BindingPopulation()
+        # Use real BindingMode instances but override their C++-dependent attrs
+        for energy in (-10.0, -9.0):
+            mode = BindingMode(cpp_binding_mode=None)
+            # Manually push a fake pose so n_poses = 1
+            mode._poses.append(object())  # just needs to be countable
+            # Patch enthalpy property to return a known value
+            type(mode).enthalpy = property(lambda self, e=energy: e)
+            pop.add_mode(mode)
+        return pop
+
+    def test_returns_thermodynamics_object(self):
+        from flexaidds.thermodynamics import Thermodynamics
+        pop = self._pop_with_real_modes()
+        result = pop.compute_global_thermodynamics()
+        assert isinstance(result, Thermodynamics)
+
+    def test_free_energy_is_finite(self):
+        pop = self._pop_with_real_modes()
+        result = pop.compute_global_thermodynamics()
+        import math
+        assert math.isfinite(result.free_energy)
