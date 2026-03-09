@@ -1,34 +1,115 @@
-# On mac the easiest way to install boost is to use brew: brew install boost
-# Then you can build the project using: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release and cmake --build build
-
-# On Windows you can get boost by downloading the zip from the official website (install binaries) and running the executable
-# If it is not detected automatically you can use something like -DBoost_DIR=C:\boost_1_86_0\stage\lib\cmake\Boost-1.86.0 or C:\boost_1_82_0\lib64-msvc-14.3\cmake\Boost-1.82.0 in the cmake command
+# Build: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
 
 cmake_minimum_required(VERSION 3.18)
 project(FlexAID LANGUAGES CXX)
 
-# ─── C++20 ────────────────────────────────────────────────────────────────────
+include(CheckCXXCompilerFlag)
+
+# ─── C++20 ────────────────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)   # -std=c++20 not -std=gnu++20
+
+# Fail fast if compiler is too old to support C++20
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS "10.0")
+        message(FATAL_ERROR
+            "FlexAIDdS requires C++20 — found ${CMAKE_CXX_COMPILER_ID} "
+            "${CMAKE_CXX_COMPILER_VERSION}. Upgrade to GCC ≥ 10 or Clang ≥ 10.")
+    endif()
+endif()
 
 if(POLICY CMP0167)
     cmake_policy(SET CMP0167 NEW)
 endif()
 
-# ─── options ──────────────────────────────────────────────────────────────────
+# ─── options ────────────────────────────────────────────────────────────────
 option(FLEXAIDS_USE_CUDA    "Enable CUDA GPU evaluation"          OFF)
 option(FLEXAIDS_USE_METAL   "Enable Metal GPU acceleration"       OFF)
 option(FLEXAIDS_USE_AVX2    "Enable AVX2 SIMD acceleration"       ON)
 option(FLEXAIDS_USE_AVX512  "Enable AVX-512 SIMD acceleration"    OFF)
 option(FLEXAIDS_USE_OPENMP  "Enable OpenMP thread parallelism"    ON)
 option(FLEXAIDS_USE_EIGEN   "Enable Eigen3 vectorised linear algebra" ON)
+option(BUILD_PYTHON_BINDINGS "Build Python bindings via pybind11" OFF)
 
-# ─── OpenMP ───────────────────────────────────────────────────────────────────
+# ─── platform / SIMD helpers ───────────────────────────────────────────────
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" FLEXAIDS_SYSTEM_PROCESSOR_LOWER)
+set(FLEXAIDS_IS_ARM FALSE)
+set(FLEXAIDS_IS_X86 FALSE)
+
+if(FLEXAIDS_SYSTEM_PROCESSOR_LOWER MATCHES "^(arm64|aarch64)$")
+    set(FLEXAIDS_IS_ARM TRUE)
+elseif(FLEXAIDS_SYSTEM_PROCESSOR_LOWER MATCHES "^(x86_64|amd64|x64|i[3-6]86)$")
+    set(FLEXAIDS_IS_X86 TRUE)
+endif()
+
+if(APPLE AND FLEXAIDS_IS_ARM)
+    if(FLEXAIDS_USE_AVX2 OR FLEXAIDS_USE_AVX512)
+        message(STATUS "Apple Silicon detected — disabling x86 SIMD flags (-mavx2, -mfma, -mavx512*)")
+    endif()
+    set(FLEXAIDS_USE_AVX2 OFF CACHE BOOL "Enable AVX2 SIMD acceleration" FORCE)
+    set(FLEXAIDS_USE_AVX512 OFF CACHE BOOL "Enable AVX-512 SIMD acceleration" FORCE)
+endif()
+
+function(flexaids_configure_simd target_name)
+    if(MSVC)
+        if(FLEXAIDS_IS_X86)
+            if(FLEXAIDS_USE_AVX512)
+                target_compile_options(${target_name} PRIVATE /arch:AVX512)
+                target_compile_definitions(${target_name} PRIVATE FLEXAIDS_USE_AVX512)
+                message(STATUS "${target_name}: AVX-512 enabled via /arch:AVX512")
+            elseif(FLEXAIDS_USE_AVX2)
+                target_compile_options(${target_name} PRIVATE /arch:AVX2)
+                target_compile_definitions(${target_name} PRIVATE FLEXAIDS_USE_AVX2)
+                message(STATUS "${target_name}: AVX2 enabled via /arch:AVX2")
+            endif()
+        else()
+            message(STATUS "${target_name}: non-x86 MSVC target detected — building without x86 SIMD flags")
+        endif()
+        return()
+    endif()
+
+    if(NOT FLEXAIDS_IS_X86)
+        message(STATUS "${target_name}: non-x86 target detected (${CMAKE_SYSTEM_PROCESSOR}) — building without x86 SIMD flags")
+        return()
+    endif()
+
+    if(FLEXAIDS_USE_AVX512)
+        check_cxx_compiler_flag("-mavx512f" FLEXAIDS_COMPILER_SUPPORTS_MAVX512F)
+        check_cxx_compiler_flag("-mavx512dq" FLEXAIDS_COMPILER_SUPPORTS_MAVX512DQ)
+        check_cxx_compiler_flag("-mavx512bw" FLEXAIDS_COMPILER_SUPPORTS_MAVX512BW)
+        check_cxx_compiler_flag("-mavx2" FLEXAIDS_COMPILER_SUPPORTS_MAVX2)
+        check_cxx_compiler_flag("-mfma" FLEXAIDS_COMPILER_SUPPORTS_MFMA)
+
+        if(FLEXAIDS_COMPILER_SUPPORTS_MAVX512F AND FLEXAIDS_COMPILER_SUPPORTS_MAVX512DQ AND
+           FLEXAIDS_COMPILER_SUPPORTS_MAVX512BW AND FLEXAIDS_COMPILER_SUPPORTS_MAVX2 AND
+           FLEXAIDS_COMPILER_SUPPORTS_MFMA)
+            target_compile_options(${target_name} PRIVATE -mavx512f -mavx512dq -mavx512bw -mavx2 -mfma)
+            target_compile_definitions(${target_name} PRIVATE FLEXAIDS_USE_AVX512)
+            message(STATUS "${target_name}: AVX-512 enabled")
+        else()
+            message(WARNING "${target_name}: AVX-512 requested but compiler/target does not support the required flags; building without AVX-512")
+        endif()
+    elseif(FLEXAIDS_USE_AVX2)
+        check_cxx_compiler_flag("-mavx2" FLEXAIDS_COMPILER_SUPPORTS_MAVX2)
+        check_cxx_compiler_flag("-mfma" FLEXAIDS_COMPILER_SUPPORTS_MFMA)
+
+        if(FLEXAIDS_COMPILER_SUPPORTS_MAVX2 AND FLEXAIDS_COMPILER_SUPPORTS_MFMA)
+            target_compile_options(${target_name} PRIVATE -mavx2 -mfma)
+            target_compile_definitions(${target_name} PRIVATE FLEXAIDS_USE_AVX2)
+            message(STATUS "${target_name}: AVX2/FMA enabled")
+        else()
+            message(WARNING "${target_name}: AVX2 requested but compiler/target does not support -mavx2/-mfma; building without x86 SIMD")
+        endif()
+    endif()
+endfunction()
+
+# ─── OpenMP ───────────────────────────────────────────────────────────────
 if(FLEXAIDS_USE_OPENMP)
     find_package(OpenMP)
 endif()
 
-# ─── Eigen3 (header-only; optional but strongly recommended) ──────────────────
+# ─── Eigen3 (header-only; optional but strongly recommended) ──────────────────────
 if(FLEXAIDS_USE_EIGEN)
     find_package(Eigen3 3.4 QUIET NO_MODULE)
     if(Eigen3_FOUND)
@@ -48,13 +129,24 @@ if(FLEXAIDS_USE_EIGEN)
     endif()
 endif()
 
-# ─── CUDA (optional) ─────────────────────────────────────────────────────────
+# ─── pybind11 (for Python bindings) ────────────────────────────────────────
+if(BUILD_PYTHON_BINDINGS)
+    find_package(pybind11 CONFIG QUIET)
+    if(NOT pybind11_FOUND)
+        message(WARNING "pybind11 not found. Install with: pip install pybind11[global]")
+        set(BUILD_PYTHON_BINDINGS OFF)
+    else()
+        message(STATUS "pybind11 ${pybind11_VERSION} found — Python bindings enabled")
+    endif()
+endif()
+
+# ─── CUDA (optional) ─────────────────────────────────────────────────────
 if(FLEXAIDS_USE_CUDA)
     enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)
 endif()
 
-# ─── Metal (optional, macOS only) ────────────────────────────────────────────
+# ─── Metal (optional, macOS only) ────────────────────────────────────────
 if(FLEXAIDS_USE_METAL)
     if(NOT APPLE)
         message(FATAL_ERROR "Metal acceleration is only supported on macOS")
@@ -69,7 +161,7 @@ else()
     endif()
 endif()
 
-# ─── executable ───────────────────────────────────────────────────────────────
+# ─── executable ─────────────────────────────────────────────────────────
 add_executable(FlexAID "")
 target_sources(FlexAID PRIVATE
         LIB/top.cpp
@@ -144,9 +236,10 @@ target_sources(FlexAID PRIVATE
         LIB/partition_grid.cpp
         LIB/generate_grid.cpp
         LIB/maps.cpp
-        # ── new C++20 modules ���─
+        # ── new C++20 modules ──
         LIB/tencm.cpp
         LIB/statmech.cpp
+        LIB/encom.cpp             # ← NEW: ENCoM vibrational entropy
         # ── v1.5 thermodynamic + hardware acceleration modules ──
         LIB/ShannonThermoStack/ShannonThermoStack.cpp
         LIB/LigandRingFlex/RingConformerLibrary.cpp
@@ -156,6 +249,8 @@ target_sources(FlexAID PRIVATE
         LIB/NATURaL/RibosomeElongation.cpp
         LIB/NATURaL/TransloconInsertion.cpp
         LIB/ChiralCenter/ChiralCenterGene.cpp
+        # ── CavityDetect: native SURFNET cavity detection ──
+        LIB/CavityDetect/CavityDetect.cpp
 )
 
 target_include_directories(FlexAID PRIVATE
@@ -164,29 +259,18 @@ target_include_directories(FlexAID PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/LIB/LigandRingFlex
     ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
     ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ChiralCenter
+    ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
 )
 
-# ─── compiler flags ──────────────────────────────────────────────────────────
+# ─── compiler flags ────────────────────────────────────────────────────
 if(MSVC)
     target_compile_options(FlexAID PRIVATE /W4 /O2 /MT)
-    if(FLEXAIDS_USE_AVX512)
-        target_compile_options(FlexAID PRIVATE /arch:AVX512)
-    elseif(FLEXAIDS_USE_AVX2)
-        target_compile_options(FlexAID PRIVATE /arch:AVX2)
-    endif()
 else()
     target_compile_options(FlexAID PRIVATE -Wall -O3 -ffast-math)
-    if(FLEXAIDS_USE_AVX512)
-        # AVX-512 supersedes AVX2; include both for compatibility with mixed intrinsics
-        target_compile_options(FlexAID PRIVATE -mavx512f -mavx512dq -mavx512bw -mavx2 -mfma)
-        target_compile_definitions(FlexAID PRIVATE FLEXAIDS_USE_AVX512)
-        message(STATUS "AVX-512 enabled (mavx512f + mavx512dq + mavx512bw)")
-    elseif(FLEXAIDS_USE_AVX2)
-        target_compile_options(FlexAID PRIVATE -mavx2 -mfma)
-    endif()
 endif()
+flexaids_configure_simd(FlexAID)
 
-# ─── Eigen3 link + definition ─────────────────────────────────────────────────
+# ─── Eigen3 link + definition ─────────────────────────────────────────────
 if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
     target_link_libraries(FlexAID PRIVATE Eigen3::Eigen)
     target_compile_definitions(FlexAID PRIVATE FLEXAIDS_HAS_EIGEN)
@@ -195,12 +279,12 @@ elseif(FLEXAIDS_USE_EIGEN AND EIGEN3_FOUND)
     target_compile_definitions(FlexAID PRIVATE FLEXAIDS_HAS_EIGEN)
 endif()
 
-# ─── OpenMP link ──────────────────────────────────────────────────────────────
+# ─── OpenMP link ────────────────────────────────────────────────────────
 if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
     target_link_libraries(FlexAID PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
-# ─── CUDA sources ─────────────────────────────────────────────────────────────
+# ─── CUDA sources ───────────────────────────────────────────────────────
 if(FLEXAIDS_USE_CUDA)
     target_sources(FlexAID PRIVATE
         LIB/cuda_eval.cu                          # existing CF batch kernel
@@ -214,7 +298,7 @@ if(FLEXAIDS_USE_CUDA)
     message(STATUS "CUDA enabled — CF batch kernel + Shannon histogram kernel")
 endif()
 
-# ─── Metal sources ────────────────────────────────────────────────────────────
+# ─── Metal sources ──────────────────────────────────────────────────────
 if(FLEXAIDS_USE_METAL)
     target_sources(FlexAID PRIVATE LIB/metal_eval.mm)
     target_compile_definitions(FlexAID PRIVATE FLEXAIDS_USE_METAL)
@@ -235,24 +319,73 @@ if(FLEXAIDS_USE_METAL)
         LANGUAGE OBJCXX
         COMPILE_FLAGS "-std=c++20 -fno-objc-arc"
     )
+    # CavityDetect Metal bridge (Task 1.4: GPU probe-sphere generation)
+    target_sources(FlexAID PRIVATE LIB/CavityDetect/CavityDetectMetalBridge.mm)
+    set_source_files_properties(LIB/CavityDetect/CavityDetectMetalBridge.mm PROPERTIES
+        LANGUAGE OBJCXX
+        COMPILE_FLAGS "-std=c++20 -fno-objc-arc"
+    )
+    # Compile CavityDetect.metal shader → .metallib
+    set(CAVITY_METAL_SRC  "${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect/CavityDetect.metal")
+    set(CAVITY_AIR        "${CMAKE_CURRENT_BINARY_DIR}/CavityDetect.air")
+    set(CAVITY_METALLIB   "${CMAKE_CURRENT_BINARY_DIR}/CavityDetect.metallib")
+    add_custom_command(
+        OUTPUT  "${CAVITY_AIR}"
+        COMMAND xcrun -sdk macosx metal -c "${CAVITY_METAL_SRC}" -o "${CAVITY_AIR}"
+        DEPENDS "${CAVITY_METAL_SRC}"
+        COMMENT "Compiling CavityDetect Metal shader"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT  "${CAVITY_METALLIB}"
+        COMMAND xcrun -sdk macosx metallib "${CAVITY_AIR}" -o "${CAVITY_METALLIB}"
+        DEPENDS "${CAVITY_AIR}"
+        COMMENT "Linking CavityDetect.metallib"
+        VERBATIM
+    )
+    add_custom_target(CavityDetectMetal DEPENDS "${CAVITY_METALLIB}")
+    add_dependencies(FlexAID CavityDetectMetal)
+    target_compile_definitions(FlexAID PRIVATE
+        CAVITY_METALLIB_PATH="${CAVITY_METALLIB}"
+    )
 endif()
 
-# ─── TeNCoM benchmark (optional standalone binary) ────────────────────────────
+# ─── Python bindings (pybind11 module) ─────────────────────────────────────────
+if(BUILD_PYTHON_BINDINGS AND pybind11_FOUND)
+    pybind11_add_module(_core
+        python/bindings/core_bindings.cpp
+        LIB/statmech.cpp
+        LIB/encom.cpp
+        # BindingMode requires full GA infrastructure
+        # Partial exposure for now (thermodynamics only)
+    )
+    target_include_directories(_core PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+    )
+    target_compile_definitions(_core PRIVATE VERSION_INFO=${PROJECT_VERSION})
+    
+    # Link Eigen3 if available
+    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+        target_link_libraries(_core PRIVATE Eigen3::Eigen)
+        target_compile_definitions(_core PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
+    
+    message(STATUS "Python bindings enabled — build target: _core.so")
+    message(STATUS "Install with: pip install -e python/")
+endif()
+
+# ─── TeNCoM benchmark (optional standalone binary) ────────────────────────────────
 option(ENABLE_TENCOM_BENCHMARK "Build the TeNCoM benchmark binary" OFF)
 if(ENABLE_TENCOM_BENCHMARK)
     add_executable(benchmark_tencom
         LIB/benchmark_tencom.cpp
         LIB/tencm.cpp
         LIB/statmech.cpp
+        LIB/encom.cpp
     )
     target_include_directories(benchmark_tencom PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
-    target_compile_options(benchmark_tencom PRIVATE -O3 -march=native -ffast-math)
-    if(FLEXAIDS_USE_AVX512)
-        target_compile_options(benchmark_tencom PRIVATE -mavx512f -mavx512dq -mavx2 -mfma)
-        target_compile_definitions(benchmark_tencom PRIVATE FLEXAIDS_USE_AVX512)
-    elseif(FLEXAIDS_USE_AVX2)
-        target_compile_options(benchmark_tencom PRIVATE -mavx2 -mfma)
-    endif()
+    target_compile_options(benchmark_tencom PRIVATE -O3 -ffast-math)
+    flexaids_configure_simd(benchmark_tencom)
     if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
         target_link_libraries(benchmark_tencom PRIVATE OpenMP::OpenMP_CXX)
     endif()
@@ -261,4 +394,20 @@ if(ENABLE_TENCOM_BENCHMARK)
         target_compile_definitions(benchmark_tencom PRIVATE FLEXAIDS_HAS_EIGEN)
     endif()
     message(STATUS "TeNCoM benchmark enabled — build target: benchmark_tencom")
+endif()
+
+# ─── VoronoiCFBatch benchmark (Task 2.3) ───────────────────────────────────────
+# VoronoiCFBatch.h is header-only; the benchmark binary exercises the std::span
+# batch interface and prints a serial-vs-OpenMP speedup table.
+option(ENABLE_VCFBATCH_BENCHMARK "Build the VoronoiCFBatch benchmark binary" OFF)
+if(ENABLE_VCFBATCH_BENCHMARK)
+    add_executable(benchmark_vcfbatch LIB/benchmark_vcfbatch.cpp)
+    target_include_directories(benchmark_vcfbatch PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_compile_options(benchmark_vcfbatch PRIVATE -O3 -ffast-math)
+    flexaids_configure_simd(benchmark_vcfbatch)
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(benchmark_vcfbatch PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    message(STATUS "VoronoiCFBatch benchmark enabled — build target: benchmark_vcfbatch")
 endif()
