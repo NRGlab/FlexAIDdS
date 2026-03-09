@@ -25,18 +25,17 @@ static std::mt19937& rng() {
 }
 
 // ─── detect_stereocenters ────────────────────────────────────────────────────
-// Heuristic: sp3 carbon with 4 distinct substituents.
-// Full CIP assignment requires the bond graph — here we use a simplified
-// version that identifies candidate centers by valence and atom type.
+// Heuristic: sp3 carbon with 4 substituents of distinct atom types.
+// Full CIP priority assignment requires the complete bond graph — here we
+// identify candidate centers by valence and SYBYL atom type comparison.
 std::vector<ChiralCenter> detect_stereocenters(const atom* atoms, int n_atoms) {
     std::vector<ChiralCenter> centers;
     if (!atoms || n_atoms <= 0) return centers;
 
     for (int i = 0; i < n_atoms; ++i) {
-        // Check for sp3 carbon with type 'C' and 4 neighbours
-        const char* atype = atoms[i].type;
-        if (!atype) continue;
-        if (atype[0] != 'C' && atype[0] != 'c') continue;
+        // Check for sp3 carbon (element "C ") with 4 neighbours
+        const char* elem = atoms[i].element;
+        if (elem[0] != 'C' && elem[0] != 'c') continue;
 
         // Count bonded neighbours via the bond list
         // (atoms[i].bond[] stores bonded atom indices in FlexAID)
@@ -50,11 +49,12 @@ std::vector<ChiralCenter> detect_stereocenters(const atom* atoms, int n_atoms) {
         }
 
         if (n_bonds == 4) {
-            // Verify all four substituents are distinct (by atom type)
+            // Verify all four substituents are distinct by atom type
             bool all_distinct = true;
             for (int a = 0; a < 4 && all_distinct; ++a)
                 for (int b = a + 1; b < 4 && all_distinct; ++b)
-                    if (substituents[a] == substituents[b]) all_distinct = false;
+                    if (atoms[substituents[a]].type == atoms[substituents[b]].type)
+                        all_distinct = false;
 
             if (all_distinct) {
                 ChiralCenter c;

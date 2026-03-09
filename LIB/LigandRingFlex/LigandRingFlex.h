@@ -10,9 +10,11 @@
 #include <vector>
 #include <cstdint>
 
-// Forward declarations
-struct atom;
-struct FA_Global;
+// Forward declarations (must match typedefs in flexaid.h)
+struct atom_struct;
+typedef atom_struct atom;
+struct FA_Global_struct;
+typedef FA_Global_struct FA_Global;
 
 namespace ligand_ring_flex {
 

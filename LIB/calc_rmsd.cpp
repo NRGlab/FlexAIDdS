@@ -1,5 +1,5 @@
 #include "flexaid.h"
-#include "boinc.h"
+#include "fileio.h"
 /********************************************************************************
  * This function calculates the RSMD between atomic coordinates of the atoms in *
  * the register ori_ligatm and those for the atoms of the ligand in             *
@@ -510,7 +510,7 @@ void Hungarian_draw_line(float** matrix, float** matrix_original, int** matrix_c
     }
     
     bool flag_update = true; // Flag indicating that an update was made during last iter
-    int count_updates = 0;	 // Loop counter
+    int count_updates = 0;	 // Safety bound: counts row markings to prevent infinite loops
     
     // Looping until which line to be drawn is decided
     while(flag_update && count_updates < nTypes*2)
@@ -543,7 +543,7 @@ void Hungarian_draw_line(float** matrix, float** matrix_original, int** matrix_c
                     {
                         row_assigned[j] = 1; // Mark that row
                         flag_update = true;  // Flag the update that have been made
-                        count_updates++; 	 // Unsure if I need to update the counter here OR elsewhere OR if I need to get rid of it
+                        count_updates++; 	 // Correct: counts each new row marking; at most nTypes markings possible
                     } 
                 }
             }
