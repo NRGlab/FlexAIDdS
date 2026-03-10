@@ -14,6 +14,9 @@ except ImportError as exc:
 ROOT = Path(__file__).resolve().parent
 LIB_DIR = ROOT.parent / "LIB"
 
+# setuptools requires /-separated paths relative to setup.py directory
+_rel_lib = "../LIB"
+
 # Read version from __version__.py without importing the package (which
 # would require _core to be built already).
 _version_file = ROOT / "flexaidds" / "__version__.py"
