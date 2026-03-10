@@ -228,19 +228,22 @@ TEST_F(StatMechEngineTest, EqualEnergyStatesMaxEntropy) {
 }
 
 TEST_F(StatMechEngineTest, EntropyIncreasesWithSpread) {
-    // Narrower distribution → less entropy
+    // At room temperature:
+    // - Tight energy distribution (narrow) → all states have similar energy → equal probability → HIGH entropy
+    // - Wide energy distribution (broad) → lowest energy state dominates → LOW entropy
     StatMechEngine narrow(TEMPERATURE);
     StatMechEngine broad(TEMPERATURE);
 
     for (int i = 0; i < 5; ++i) {
-        narrow.add_sample(-10.0 - 0.01 * i);  // very tight
-        broad.add_sample(-10.0 - 5.0 * i);    // wide spread
+        narrow.add_sample(-10.0 - 0.01 * i);  // very tight (all ~-10.0)
+        broad.add_sample(-10.0 - 5.0 * i);    // wide spread (-10 to -30)
     }
 
     auto th_narrow = narrow.compute();
     auto th_broad = broad.compute();
 
-    EXPECT_GT(th_broad.entropy, th_narrow.entropy);
+    // Narrow (uniform probability) has higher entropy than broad (dominated by one state)
+    EXPECT_GT(th_narrow.entropy, th_broad.entropy);
 }
 
 // ===========================================================================
@@ -248,16 +251,18 @@ TEST_F(StatMechEngineTest, EntropyIncreasesWithSpread) {
 // ===========================================================================
 
 TEST_F(StatMechEngineTest, HighTemperatureFlattensWeights) {
-    // At T → ∞, all Boltzmann weights become equal
+    // At high T, Boltzmann weights become more uniform.
+    // Even at 10000K with 30 kcal/mol spread, βΔE=1.5 is still significant.
+    // Use a smaller energy spread (1 kcal/mol) for uniform weighting at 10000K.
     StatMechEngine hot(10000.0);  // very high T
-    std::vector<double> energies = {-20.0, -10.0, 0.0, 10.0};
+    std::vector<double> energies = {-0.5, -0.25, 0.0, 0.25};  // 1 kcal/mol total spread
     for (double e : energies)
         hot.add_sample(e);
 
     auto weights = hot.boltzmann_weights();
     double mean_w = 1.0 / static_cast<double>(energies.size());
     for (double w : weights)
-        EXPECT_NEAR(w, mean_w, 0.05);  // loose tolerance at high T
+        EXPECT_NEAR(w, mean_w, 0.01);  // tight tolerance since T is very high and ΔE small
 }
 
 TEST_F(StatMechEngineTest, LowTemperatureConcentratesWeight) {
