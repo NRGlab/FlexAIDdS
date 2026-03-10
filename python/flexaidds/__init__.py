@@ -28,8 +28,8 @@ except ImportError:
     TIPoint = None
     VibrationalEntropy = None
     WHAMBin = None
-    kB_kcal = None
-    kB_SI = None
+    kB_kcal = 0.0019872041
+    kB_SI = 1.380649e-23
     HAS_CORE_BINDINGS = False
 
 from .models import BindingModeResult, DockingResult, PoseResult
@@ -57,6 +57,7 @@ __all__ = [
     "BindingModeResult",
     "DockingResult",
     "load_results",
+    # Availability flag
     "HAS_CORE_BINDINGS",
 ]
 

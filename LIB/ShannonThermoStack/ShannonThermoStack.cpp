@@ -2,7 +2,7 @@
 //
 // Hardware dispatch priority (runtime):
 //   1. CUDA GPU   (FLEXAIDS_USE_CUDA)
-//   2. Metal GPU  (ENABLE_METAL_CORE, Apple Silicon)
+//   2. Metal GPU  (FLEXAIDS_HAS_METAL_SHANNON, Apple Silicon)
 //   3. AVX-512    (__AVX512F__)  — 8 doubles/cycle histogram binning
 //   4. OpenMP     (_OPENMP)
 //   5. Scalar     (always available)
@@ -10,7 +10,7 @@
 // Eigen is used for vectorised log() / probability array ops on all CPU paths.
 #include "ShannonThermoStack.h"
 
-#ifdef ENABLE_METAL_CORE
+#ifdef FLEXAIDS_HAS_METAL_SHANNON
 #  include "ShannonMetalBridge.h"
 #endif
 
@@ -178,7 +178,7 @@ double compute_shannon_entropy(const std::vector<double>& values, int num_bins) 
 #endif
 
 // ── 2. Metal ──────────────────────────────────────────────────────────────────
-#ifdef ENABLE_METAL_CORE
+#ifdef FLEXAIDS_HAS_METAL_SHANNON
     return ShannonMetalBridge::compute_shannon_entropy_metal(values, num_bins);
 #endif
 
@@ -297,7 +297,7 @@ FullThermoResult run_shannon_thermo_stack(
     const char* hw =
 #if defined(FLEXAIDS_USE_CUDA)
         "CUDA";
-#elif defined(ENABLE_METAL_CORE)
+#elif defined(FLEXAIDS_HAS_METAL_SHANNON)
         "Metal";
 #elif defined(__AVX512F__)
         "AVX-512";
