@@ -296,10 +296,13 @@ if(FLEXAIDS_USE_CUDA)
         LIB/ShannonThermoStack/shannon_cuda.cu    # Shannon entropy histogram kernel
     )
     target_compile_definitions(FlexAID PRIVATE FLEXAIDS_USE_CUDA)
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES "70;75;80;86;89;90")
+    endif()
     set_target_properties(FlexAID PROPERTIES
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_STANDARD 17)
-    target_link_libraries(FlexAID PRIVATE CUDA::cudart)
+    target_link_libraries(FlexAID PRIVATE CUDA::cudart CUDA::cudadevrt)
     message(STATUS "CUDA enabled — CF batch kernel + Shannon histogram kernel")
 endif()
 
@@ -319,7 +322,7 @@ if(FLEXAIDS_USE_METAL)
     )
     # Shannon Metal GPU bridge (Apple Silicon Shannon entropy histogram)
     target_sources(FlexAID PRIVATE LIB/ShannonThermoStack/ShannonMetalBridge.mm)
-    target_compile_definitions(FlexAID PRIVATE ENABLE_METAL_CORE)
+    target_compile_definitions(FlexAID PRIVATE FLEXAIDS_HAS_METAL_SHANNON)
     set_source_files_properties(LIB/ShannonThermoStack/ShannonMetalBridge.mm PROPERTIES
         LANGUAGE OBJCXX
         COMPILE_FLAGS "-std=c++20 -fno-objc-arc"

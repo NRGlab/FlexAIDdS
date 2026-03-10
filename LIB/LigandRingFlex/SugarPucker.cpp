@@ -100,11 +100,10 @@ void apply_sugar_puckers(
         // Load 8 phases (floats) into one AVX-512 register
         alignas(64) float phase_buf[8];
         for (int q = 0; q < 8; ++q) phase_buf[q] = phases_deg[i + q] * DEG2RAD;
-        __m256 vphase_f32 = _mm256_load_ps(phase_buf);
-        __m512 vphase     = _mm512_cvtps_pd(vphase_f32);  // promote to float via __m512
+        (void)phase_buf; // phases consumed via phases_deg[i+q] below
 
         // For each k in 0..4, compute torsion[k] = nu_max * cos(phase + delta*(k-2))
-        // Store into atoms[ring[j]].ic[0] for j=0..7
+        // Store into atoms[ring[j]].dih for j=0..7
         for (int k = 0; k < 5; ++k) {
             float offset = delta * (k - 2);
             alignas(64) float torsions[8];
@@ -114,7 +113,7 @@ void apply_sugar_puckers(
             for (int q = 0; q < 8; ++q) {
                 if (i + q < n && (int)ring_indices[i + q].size() > k) {
                     int aidx = ring_indices[i + q][k];
-                    atoms[aidx].ic[0] = torsions[q];
+                    atoms[aidx].dih = torsions[q];
                 }
             }
         }
@@ -147,7 +146,7 @@ void apply_sugar_puckers(
         Eigen::Array<float,5,1> torsions = nu_max * angles.cos() * RAD2DEG;
 
         for (int k = 0; k < 5; ++k)
-            atoms[ring[k]].ic[0] = torsions(k);
+            atoms[ring[k]].dih = torsions(k);
     }
 
 #else
