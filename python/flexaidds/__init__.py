@@ -1,55 +1,64 @@
 """flexaidds: Python bindings and read-only analysis helpers for FlexAID∆S."""
 
-from ._core import (
-    BoltzmannLUT,
-    ENCoMEngine,
-    NormalMode,
-    Replica,
-    State,
-    StatMechEngine,
-    Thermodynamics,
-    TIPoint,
-    VibrationalEntropy,
-    WHAMBin,
-    kB_kcal,
-    kB_SI,
-)
+try:
+    from ._core import (
+        BoltzmannLUT,
+        ENCoMEngine,
+        NormalMode,
+        Replica,
+        State,
+        StatMechEngine,
+        Thermodynamics,
+        TIPoint,
+        VibrationalEntropy,
+        WHAMBin,
+        kB_kcal,
+        kB_SI,
+    )
+    HAS_CORE_BINDINGS = True
+except ImportError:
+    # Fallback when C++ extension is not built
+    StatMechEngine = None
+    Thermodynamics = None
+    BoltzmannLUT = None
+    ENCoMEngine = None
+    NormalMode = None
+    Replica = None
+    State = None
+    TIPoint = None
+    VibrationalEntropy = None
+    WHAMBin = None
+    kB_kcal = 0.001987206
+    kB_SI = 1.380649e-23
+    HAS_CORE_BINDINGS = False
+
 from .models import BindingModeResult, DockingResult, PoseResult
 from .results import load_results
 
-try:
-    from ._core import StatMechEngine, Thermodynamics
-    HAS_CORE_BINDINGS = True
-except ImportError:
-    StatMechEngine = None
-    Thermodynamics = None
-    HAS_CORE_BINDINGS = False
-
 __all__ = [
-    # C++ core: statistical mechanics
-    "StatMechEngine",
-    "Thermodynamics",
-    "State",
-    "BoltzmannLUT",
-    # C++ core: parallel tempering & free energy methods
-    "Replica",
-    "WHAMBin",
-    "TIPoint",
-    # C++ core: ENCoM vibrational entropy
-    "ENCoMEngine",
-    "NormalMode",
-    "VibrationalEntropy",
-    # Physical constants
-    "kB_kcal",
-    "kB_SI",
-    # Python models & I/O
+    # Python models & I/O (always available)
     "PoseResult",
     "BindingModeResult",
     "DockingResult",
     "load_results",
+    # Physical constants (always available)
+    "kB_kcal",
+    "kB_SI",
 ]
 
+# C++ core modules (only available when compiled)
 if HAS_CORE_BINDINGS:
-    __all__.extend(["StatMechEngine", "Thermodynamics"])
+    __all__.extend([
+        "StatMechEngine",
+        "Thermodynamics",
+        "State",
+        "BoltzmannLUT",
+        "Replica",
+        "WHAMBin",
+        "TIPoint",
+        "ENCoMEngine",
+        "NormalMode",
+        "VibrationalEntropy",
+    ])
 
 __version__ = "0.1.0"
