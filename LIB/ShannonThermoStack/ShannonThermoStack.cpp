@@ -66,27 +66,11 @@ void ShannonEnergyMatrix::initialise() {
     const double kT    = kB_kcal * TEMPERATURE_K;
     const double l2inv = 1.0 / std::log(2.0);
 
-#ifdef __AVX512F__
-    // Fill the matrix 8 doubles at a time using AVX-512
-    __m512d vkT_l2 = _mm512_set1_pd(-kT * l2inv);
-    for (int i = 0; i < SHANNON_BINS; ++i) {
-        __m512d vpi = _mm512_set1_pd(p_i[i]);
-        int j = 0;
-        for (; j + 7 < SHANNON_BINS; j += 8) {
-            __m512d vpj  = _mm512_loadu_pd(&p_j[j]);
-            // _mm512_log_pd requires SVML; use std::log scalar fallback if missing
-            __m512d vlog = _mm512_log_pd(vpj);
-            __m512d vres = _mm512_mul_pd(vkT_l2, _mm512_mul_pd(vpi, vlog));
-            _mm512_storeu_pd(&matrix_[i * SHANNON_BINS + j], vres);
-        }
-        for (; j < SHANNON_BINS; ++j)
-            matrix_[i * SHANNON_BINS + j] = -kT * p_i[i] * std::log(p_j[j]) * l2inv;
-    }
-#else
+    // Fill the entropy matrix: _mm512_log_pd requires SVML which may not be linked
+    // Using portable scalar implementation with std::log for maximum compatibility
     for (int i = 0; i < SHANNON_BINS; ++i)
         for (int j = 0; j < SHANNON_BINS; ++j)
             matrix_[i * SHANNON_BINS + j] = -kT * p_i[i] * std::log(p_j[j]) * l2inv;
-#endif
     initialised_ = true;
 }
 
