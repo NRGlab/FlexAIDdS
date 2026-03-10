@@ -453,5 +453,24 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME StatMechTests COMMAND test_statmech)
 
-    message(STATUS "Unit tests enabled — build target: test_statmech")
+    # test_hardware_dispatch — ShannonThermoStack dispatch layer tests
+    add_executable(test_hardware_dispatch
+        tests/test_hardware_dispatch.cpp
+        LIB/ShannonThermoStack/ShannonThermoStack.cpp
+        LIB/statmech.cpp
+        LIB/tencm.cpp)
+    target_include_directories(test_hardware_dispatch PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack)
+    target_link_libraries(test_hardware_dispatch PRIVATE GTest::gtest GTest::gtest_main)
+    target_compile_options(test_hardware_dispatch PRIVATE -O2)
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_hardware_dispatch PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    if(FLEXAIDS_HAS_EIGEN)
+        target_link_libraries(test_hardware_dispatch PRIVATE Eigen3::Eigen)
+    endif()
+    add_test(NAME HardwareDispatchTests COMMAND test_hardware_dispatch)
+
+    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch")
 endif()
