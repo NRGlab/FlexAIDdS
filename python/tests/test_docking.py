@@ -385,14 +385,14 @@ class TestDockingParseConfig:
         assert d.optimization_method is None
 
 
-# ── Docking.run – raises NotImplementedError ─────────────────────────────────
+# ── Docking.run – raises FileNotFoundError when binary not found ──────────────
 
 class TestDockingRun:
-    def test_run_raises_not_implemented(self, tmp_path):
+    def test_run_raises_file_not_found_when_no_binary(self, tmp_path):
         cfg = tmp_path / "test.inp"
         _write_config(cfg, ["PDBNAM receptor.pdb"])
         d = Docking(str(cfg))
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(FileNotFoundError):
             d.run()
 
 

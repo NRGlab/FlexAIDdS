@@ -190,9 +190,10 @@ class TestVibrationalEntropyCpp:
         ve = self._make(s_vib=0.02)
         assert abs(ve.S_vib_kcal_mol_K - 0.02) < 1e-12
 
-    def test_dG_vib_stored(self):
-        ve = self._make(dG_vib=-5.0)
-        assert abs(ve.dG_vib_kcal_mol - (-5.0)) < 1e-12
+    def test_dG_vib_computed(self):
+        """dG_vib = -T * S_vib (computed property)."""
+        ve = self._make(s_vib=0.01, temperature=300.0)
+        assert abs(ve.dG_vib_kcal_mol - (-300.0 * 0.01)) < 1e-12
 
     def test_temperature_stored(self):
         ve = self._make(temperature=310.0)

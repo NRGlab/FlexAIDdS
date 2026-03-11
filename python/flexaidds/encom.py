@@ -219,8 +219,9 @@ class ENCoMEngine:
                     cm.frequency = m.frequency
                     cm.eigenvector = m.eigenvector
                     cpp_modes.append(cm)
-                vs_cpp = _core.ENCoMEngine.compute_vibrational_entropy(
-                    cpp_modes, temperature_K, eigenvalue_cutoff
+                eng = _core.ENCoMEngine(eigenvalue_cutoff=eigenvalue_cutoff)
+                vs_cpp = eng.compute_vibrational_entropy(
+                    cpp_modes, temperature_K
                 )
                 return VibrationalEntropy(
                     S_vib_kcal_mol_K=vs_cpp.S_vib_kcal_mol_K,

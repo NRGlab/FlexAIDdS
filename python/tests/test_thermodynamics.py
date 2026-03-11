@@ -281,8 +281,9 @@ class TestBoltzmannLUT:
         energy = -12.5
         exact = math.exp(-beta * energy)
         approx = lut(energy)
-        # LUT resolution: within 0.01% of exact value
-        assert abs(approx - exact) / exact < 1e-4
+        # LUT resolution: within 0.05% of exact value
+        # (nearest-bin lookup with 100K bins over 25 kcal/mol range)
+        assert abs(approx - exact) / exact < 5e-4
 
 
 @needs_core
