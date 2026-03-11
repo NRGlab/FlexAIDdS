@@ -1,6 +1,26 @@
 #include "gaboom.h"
 #include "fileio.h"
 #include "Vcontacts.h"
+#include "config_parser.h"
+#include "config_defaults.h"
+
+#include <string>
+
+static void print_usage(const char* progname) {
+	printf("FlexAIDdS — Entropy-driven molecular docking\n\n");
+	printf("Usage:\n");
+	printf("  %s <receptor.pdb> <ligand.mol2> [options]\n", progname);
+	printf("  %s --legacy <config.inp> <ga.inp> <output_prefix>\n\n", progname);
+	printf("Options:\n");
+	printf("  -c, --config <file.json>   JSON config file (overrides defaults)\n");
+	printf("  -o, --output <prefix>      Output file prefix (default: flexaid_out)\n");
+	printf("  --rigid                    Disable all flexibility (fast screening)\n");
+	printf("  --legacy                   Legacy 3-file input mode\n");
+	printf("  -h, --help                 Show this help\n\n");
+	printf("Full flexibility is enabled by default (T=300K, ligand torsions,\n");
+	printf("intramolecular scoring, Voronoi contacts). Use -c to override any\n");
+	printf("parameter via JSON. Use --rigid for fast rigid-body screening.\n");
+}
 
 int main(int argc, char **argv){
 
@@ -188,11 +208,99 @@ int main(int argc, char **argv){
 #endif //_WIN32
 
 	printf("base path is '%s'\n", FA->base_path);
-  
-	strcpy(dockinp,argv[1]);
-	strcpy(gainp,argv[2]);
-	strcpy(end_strfile,argv[3]);
-	strcpy(FA->rrgfile,end_strfile);
+
+	// ── CLI argument parsing ──────────────────────────────────────────────
+	bool legacy_mode = false;
+	bool use_rigid = false;
+	std::string config_path;
+	std::string output_prefix = "flexaid_out";
+
+	if (argc < 2) {
+		print_usage(argv[0]);
+		Terminate(1);
+	}
+
+	// Check for --help
+	for (int a = 1; a < argc; a++) {
+		if (strcmp(argv[a], "-h") == 0 || strcmp(argv[a], "--help") == 0) {
+			print_usage(argv[0]);
+			Terminate(0);
+		}
+	}
+
+	// Check for --legacy mode
+	if (strcmp(argv[1], "--legacy") == 0) {
+		if (argc < 5) {
+			fprintf(stderr, "ERROR: --legacy requires 3 arguments: <config.inp> <ga.inp> <output_prefix>\n");
+			Terminate(1);
+		}
+		legacy_mode = true;
+		strcpy(dockinp, argv[2]);
+		strcpy(gainp, argv[3]);
+		strcpy(end_strfile, argv[4]);
+		strcpy(FA->rrgfile, end_strfile);
+	}
+	// Legacy auto-detect: if exactly 3 positional args and first does not end in .pdb
+	else if (argc == 4 && strstr(argv[1], ".pdb") == NULL && strstr(argv[1], ".PDB") == NULL) {
+		legacy_mode = true;
+		strcpy(dockinp, argv[1]);
+		strcpy(gainp, argv[2]);
+		strcpy(end_strfile, argv[3]);
+		strcpy(FA->rrgfile, end_strfile);
+	}
+	else {
+		// ── New mode: receptor ligand [options] ──
+		if (argc < 3) {
+			fprintf(stderr, "ERROR: New mode requires at least: <receptor.pdb> <ligand.mol2>\n");
+			print_usage(argv[0]);
+			Terminate(1);
+		}
+
+		// Parse optional flags
+		for (int a = 3; a < argc; a++) {
+			if ((strcmp(argv[a], "-c") == 0 || strcmp(argv[a], "--config") == 0) && a + 1 < argc) {
+				config_path = argv[++a];
+			} else if ((strcmp(argv[a], "-o") == 0 || strcmp(argv[a], "--output") == 0) && a + 1 < argc) {
+				output_prefix = argv[++a];
+			} else if (strcmp(argv[a], "--rigid") == 0) {
+				use_rigid = true;
+			} else {
+				fprintf(stderr, "WARNING: Unknown option '%s' — ignoring.\n", argv[a]);
+			}
+		}
+
+		// Load JSON config: defaults → user overrides → rigid overrides
+		json::Value config = load_config(config_path);
+		if (use_rigid) {
+			config = json::merge(config, flexaid_rigid_overrides());
+		}
+
+		// Apply config to FA/GB structs
+		apply_config(config, FA, GB);
+
+		printf("FlexAIDdS config: T=%uK, ligand_flex=%s, intramolecular=%s, scoring=%s\n",
+			FA->temperature,
+			FA->deelig_flex ? "ON" : "OFF",
+			FA->intramolecular ? "ON" : "OFF",
+			FA->complf);
+
+		// For now, the new mode sets the config values but still requires
+		// the legacy input files to be generated or provided.
+		// TODO: Phase 2 — direct PDB/MOL2 loading without .inp files.
+		fprintf(stderr, "NOTE: Direct receptor/ligand mode is prepared (config applied).\n");
+		fprintf(stderr, "Input pipeline integration in progress. Use --legacy for full runs.\n");
+		fprintf(stderr, "Config loaded: %s\n", config_path.empty() ? "(defaults)" : config_path.c_str());
+
+		// Set output prefix for end_strfile
+		strncpy(end_strfile, output_prefix.c_str(), MAX_PATH__ - 1);
+		end_strfile[MAX_PATH__ - 1] = '\0';
+		strcpy(FA->rrgfile, end_strfile);
+
+		dockinp[0] = '\0';
+		gainp[0] = '\0';
+
+		Terminate(0);
+	}
 
 	//printf("END FILE:<%s>\n",end_strfile);
 	//PAUSE;

@@ -258,6 +258,8 @@ target_sources(FlexAID PRIVATE
         LIB/CavityDetect/CavityDetect.cpp
         # ── PTMAttachment: PTM/glycan modification on target chain ──
         LIB/PTMAttachment/PTMAttachment.cpp
+        # ── JSON config parser (zero external dependencies) ──
+        LIB/config_parser.cpp
 )
 
 target_include_directories(FlexAID PRIVATE
@@ -537,6 +539,17 @@ if(BUILD_TESTING)
         target_compile_definitions(test_statmech PRIVATE FLEXAIDS_HAS_EIGEN)
     endif()
     add_test(NAME StatMechTests COMMAND test_statmech)
+
+    # test_json_config — JSON parser & config defaults tests (zero dependencies)
+    add_executable(test_json_config tests/test_json_config.cpp)
+    target_include_directories(test_json_config PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_link_libraries(test_json_config PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_json_config PRIVATE /O2)
+    else()
+        target_compile_options(test_json_config PRIVATE -O2)
+    endif()
+    add_test(NAME JsonConfigTests COMMAND test_json_config)
 
     # test_hardware_dispatch — ShannonThermoStack dispatch layer tests
     add_executable(test_hardware_dispatch
