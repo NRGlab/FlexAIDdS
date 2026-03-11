@@ -103,7 +103,8 @@ inline nlohmann::json flexaid_default_config() {
             {"vcontacts_index", false},
             {"supernode", false},
             {"force_interaction", false},
-            {"interaction_factor", 5.0}
+            {"interaction_factor", 5.0},
+            {"assume_folded", false}        // skip NATURaL co-translational chain growth
         }}
     };
 }

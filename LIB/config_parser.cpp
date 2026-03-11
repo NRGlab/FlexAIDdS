@@ -189,6 +189,7 @@ void apply_config(const nlohmann::json& config, FA_Global* FA, GB_Global* GB) {
         FA->supernode = jget<bool>(config, "advanced", "supernode", false) ? 1 : 0;
         FA->force_interaction = jget<bool>(config, "advanced", "force_interaction", false) ? 1 : 0;
         FA->interaction_factor = jget<float>(config, "advanced", "interaction_factor", 5.0f);
+        FA->assume_folded = jget<bool>(config, "advanced", "assume_folded", false) ? 1 : 0;
     }
 
     // Always set metopt to GA (the only supported method in FlexAIDdS)
