@@ -18,20 +18,20 @@ try:
 except ImportError:
     # Fallback when C++ extension is not built
     BoltzmannLUT = None
-    ENCoMEngine = None
-    NormalMode = None
     Replica = None
     State = None
     TIPoint = None
-    VibrationalEntropy = None
     WHAMBin = None
     kB_kcal = 0.001987206   # kcal mol⁻¹ K⁻¹
     kB_SI = 1.380649e-23    # J K⁻¹
     HAS_CORE_BINDINGS = False
+    # Fall back to pure-Python implementations where available
+    from .encom import ENCoMEngine, NormalMode, VibrationalEntropy
 
 from .thermodynamics import StatMechEngine, Thermodynamics
 from .models import BindingModeResult, DockingResult, PoseResult
 from .results import load_results
+from .tencom_results import FlexModeResult, FlexPopulationResult, parse_tencom_pdb, parse_tencom_json
 
 __all__ = [
     # Python models & I/O (always available)
@@ -39,17 +39,33 @@ __all__ = [
     "BindingModeResult",
     "DockingResult",
     "load_results",
-    # StatMech (pure Python, always available)
+    # StatMech (always available via pure-Python fallback)
     "StatMechEngine",
     "Thermodynamics",
+    # ENCoM (always available via pure-Python fallback)
+    "ENCoMEngine",
+    "NormalMode",
+    "VibrationalEntropy",
+    # tENCoM results (always available, pure Python)
+    "FlexModeResult",
+    "FlexPopulationResult",
+    "parse_tencom_pdb",
+    "parse_tencom_json",
     # Physical constants (always available)
     "kB_kcal",
     "kB_SI",
     # Availability flag
     "HAS_CORE_BINDINGS",
+    # Thermodynamics (always available via pure-Python fallback)
+    "StatMechEngine",
+    "Thermodynamics",
+    # ENCoM (always available via pure-Python fallback)
+    "ENCoMEngine",
+    "NormalMode",
+    "VibrationalEntropy",
 ]
 
-# C++ core modules (only available when compiled)
+# C++-only modules (no pure-Python fallback)
 if HAS_CORE_BINDINGS:
     __all__.extend([
         "State",
@@ -57,9 +73,4 @@ if HAS_CORE_BINDINGS:
         "Replica",
         "WHAMBin",
         "TIPoint",
-        "ENCoMEngine",
-        "NormalMode",
-        "VibrationalEntropy",
     ])
-
-__version__ = "0.1.0"
