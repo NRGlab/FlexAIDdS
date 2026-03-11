@@ -105,9 +105,29 @@ cmake --build . -j $(nproc)
 
 ### Docking
 
+All docking and GA parameters have built-in defaults. You only need to provide an override file to change specific values from their presets.
+
 ```bash
-./FlexAID config.inp ga.inp output.pdb
+# Minimal — uses all defaults, receptor and ligand specified in override file
+./FlexAID overrides.inp
+
+# With GA overrides
+./FlexAID overrides.inp ga_overrides.inp
+
+# With explicit output path
+./FlexAID overrides.inp ga_overrides.inp output.pdb
 ```
+
+An override file only needs the parameters you want to change. For example, to dock a receptor with a ligand using Voronoi scoring at 300 K:
+
+```ini
+PDBNAM receptor.pdb
+INPLIG ligand.mol2
+COMPLF VCT
+TEMPER 300
+```
+
+Everything else (grid spacing, clustering threshold, optimization steps, etc.) uses sensible defaults automatically.
 
 ### Vibrational Entropy (tENCoM)
 
@@ -222,27 +242,121 @@ C_v = k_B·β²·(⟨E²⟩ − ⟨E⟩²)       (heat capacity)
 
 ---
 
-## GA Codes
+## Configuration Reference
 
-| Code       | Description                                                   | Value                |
-|:-----------|:--------------------------------------------------------------|:---------------------|
-| `NUMCHROM` | Number of chromosomes                                         | (int)                |
-| `NUMGENER` | Number of generations                                         | (int)                |
-| `ADAPTVGA` | Enable adaptive GA (adjusts crossover/mutation rates dynamically) | (int flag)           |
-| `ADAPTKCO` | Adaptive GA response parameters k1–k4 (each in range 0.0–1.0)    | (list) with 4 floats |
-| `CROSRATE` | Crossover rate                                                    | float (0.0–1.0)      |
-| `MUTARATE` | Mutation rate                                                     | float (0.0–1.0)      |
-| `POPINIMT` | Population initialization method                                  | `RANDOM` or `IPFILE` |
-| `FITMODEL` | Fitness model                                                     | `PSHARE` or `LINEAR` |
-| `SHAREALF` | Sharing parameter alpha (sigma share)                             | float                |
-| `SHAREPEK` | Expected number of sharing peaks in the search space              | float                |
-| `SHARESCL` | Fitness scaling factor for sharing                                | float                |
-| `STRTSEED` | Set a custom starting seed                                        | (int)                |
-| `REPMODEL` | Reproduction technique code                                       | `STEADY`, `BOOM`     |
-| `BOOMFRAC` | Population boom size  (fraction of the number of chromosomes)     | 0 to 1 (float)       |
-| `PRINTCHR` | Number of best chromosome to print each generation                | (int)                |
-| `PRINTINT` | Print generation progress as well as current best cf              | 0 or 1               |
-| `OUTGENER` | Output results for each generation                                | N/A                  |
+All parameters have built-in defaults. Override files use a simple format: one parameter per line, code followed by value.
+
+### Docking Parameters (config)
+
+#### Input Files
+
+| Code     | Description                  | Default              |
+|:---------|:-----------------------------|:---------------------|
+| `PDBNAM` | Receptor PDB file            | *(required)*         |
+| `INPLIG` | Ligand input file            | *(required)*         |
+| `DEFTYP` | Atom type definition file    | Auto (AMINO.def)     |
+| `IMATRX` | Energy matrix file           | MC_st0r5.2_6.dat     |
+| `CONSTR` | Distance constraint file     | None                 |
+| `RMSDST` | RMSD reference structure     | None                 |
+
+#### Scoring & Complementarity
+
+| Code     | Description                         | Default | Options         |
+|:---------|:------------------------------------|:--------|:----------------|
+| `COMPLF` | Complementarity function            | `SPH`   | `SPH`, `VCT`    |
+| `VCTSCO` | Voronoi self-consistency mode       | `MAX`   |                 |
+| `VCTPLA` | Voronoi plane definition            | `X`     |                 |
+| `NORMAR` | Normalize contact area              | Off     |                 |
+| `USEACS` | Use accessible surface              | Off     |                 |
+| `ACSWEI` | ACS weighting factor                | 1.0     |                 |
+
+#### Binding Site
+
+| Code     | Description                         | Default | Options                              |
+|:---------|:------------------------------------|:--------|:-------------------------------------|
+| `RNGOPT` | Binding site method                 |         | `LOCCEN`, `LOCCLF`, `LOCCDT`, `AUTO`|
+
+- `LOCCEN x y z radius` — search around center coordinates
+- `LOCCLF file.pdb` — use pre-computed sphere file
+- `LOCCDT [cleft_id] [min_r] [max_r]` — automatic cavity detection (SURFNET)
+
+#### Optimization Steps
+
+| Code     | Description                         | Default |
+|:---------|:------------------------------------|:--------|
+| `VARDIS` | Translation step (A)                | 0.25    |
+| `VARANG` | Angle step (deg)                    | 5.0     |
+| `VARDIH` | Dihedral step (deg)                 | 5.0     |
+| `VARFLX` | Flexible sidechain step (deg)       | 10.0    |
+| `SPACER` | Grid point spacing                  | 0.375   |
+
+#### Flexibility
+
+| Code     | Description                         | Default |
+|:---------|:------------------------------------|:--------|
+| `FLEXSC` | Flexible sidechain specification    | None    |
+| `ROTPER` | Rotamer vdW permeability            | 0.8     |
+| `PERMEA` | Global vdW permeability             | 1.0     |
+| `NOINTR` | Disable intramolecular scoring      | Off (intramolecular enabled) |
+| `INTRAF` | Intramolecular energy fraction      | 1.0     |
+
+#### Thermodynamics & Clustering
+
+| Code     | Description                         | Default | Options            |
+|:---------|:------------------------------------|:--------|:-------------------|
+| `TEMPER` | Temperature (K, 0 = entropy off)    | 0       |                    |
+| `CLUSTA` | Clustering algorithm                | `CF`    | `CF`, `FO`, `DP`   |
+| `CLRMSD` | Clustering RMSD threshold (A)       | 2.0     |                    |
+
+#### Output
+
+| Code     | Description                         | Default |
+|:---------|:------------------------------------|:--------|
+| `MAXRES` | Max result clusters                 | 10      |
+| `SCOOUT` | Output scored poses only            | Off     |
+| `SCOLIG` | Score ligand only (no docking)      | Off     |
+| `OUTRNG` | Output binding site range           | Off     |
+| `EXCHET` | Exclude HET groups from receptor    | Off     |
+| `INCHOH` | Include water molecules             | Off (waters removed) |
+
+### GA Parameters (ga_overrides)
+
+#### Population & Generations
+
+| Code       | Description                                                      | Default  |
+|:-----------|:-----------------------------------------------------------------|:---------|
+| `NUMCHROM` | Number of chromosomes                                            | *(required)* |
+| `NUMGENER` | Number of generations                                            | *(required)* |
+| `POPINIMT` | Population initialization method                                 | `RANDOM` |
+| `STRTSEED` | Random seed (0 = time-based)                                     | 0        |
+
+#### Genetic Operators
+
+| Code       | Description                                                      | Default  |
+|:-----------|:-----------------------------------------------------------------|:---------|
+| `CROSRATE` | Crossover rate                                                   | float (0.0-1.0) |
+| `MUTARATE` | Mutation rate                                                    | float (0.0-1.0) |
+| `ADAPTVGA` | Enable adaptive GA (auto-adjusts rates)                          | 0 (off)  |
+| `ADAPTKCO` | Adaptive response parameters k1-k4                               | 0.0 0.0 0.0 0.0 |
+
+#### Selection & Reproduction
+
+| Code       | Description                                                      | Default  |
+|:-----------|:-----------------------------------------------------------------|:---------|
+| `FITMODEL` | Fitness model                                                    | `PSHARE` or `LINEAR` |
+| `REPMODEL` | Reproduction model                                               | `STEADY` or `BOOM` |
+| `BOOMFRAC` | BOOM reproduction fraction                                       | 1.0      |
+| `SHAREALF` | Fitness sharing alpha (sigma share)                              | float    |
+| `SHAREPEK` | Expected number of fitness peaks                                 | float    |
+| `SHARESCL` | Fitness sharing scale factor                                     | float    |
+
+#### Output & Debugging
+
+| Code       | Description                                                      | Default  |
+|:-----------|:-----------------------------------------------------------------|:---------|
+| `PRINTCHR` | Best chromosomes to print per generation                         | 10       |
+| `PRINTINT` | Print generation progress                                        | 1        |
+| `OUTGENER` | Output results every generation                                  | Off      |
 
 ---
 
