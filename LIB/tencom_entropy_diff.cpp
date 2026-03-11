@@ -28,15 +28,21 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <numbers>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#ifdef _OPENMP
+#  include <omp.h>
+#endif
 
 // ─── PDB Cα parser (minimal, standalone) ─────────────────────────────────────
 
@@ -572,58 +578,89 @@ int main(int argc, char* argv[])
               << ref_vs.S_vib_kcal_mol_K << " kcal mol⁻¹ K⁻¹\n\n";
 
     // ── Step 2: Process each target ────────────────────────────────────────
-    int n_success = 0;
-    int n_fail    = 0;
+    //
+    // OpenMP parallelism: each target is fully independent (separate TENCoM
+    // build + diagonalisation). Console output is serialised via mutex.
+    // File I/O per target is also independent.
+    std::atomic<int> n_success{0};
+    std::atomic<int> n_fail{0};
+    const int n_targets = static_cast<int>(target_paths.size());
 
-    for (const auto& tgt_path : target_paths) {
-        std::cout << "─── Processing: " << tgt_path << " ───\n";
+#ifdef _OPENMP
+    std::mutex io_mutex;
+    std::cout << "Processing " << n_targets << " targets with "
+              << omp_get_max_threads() << " OpenMP threads\n\n";
+
+    #pragma omp parallel for schedule(dynamic, 1)
+#endif
+    for (int ti = 0; ti < n_targets; ++ti) {
+        const std::string& tgt_path = target_paths[ti];
 
         std::vector<CaResidue> tgt_cas;
         try {
             tgt_cas = parse_pdb_ca(tgt_path);
         } catch (const std::exception& e) {
+#ifdef _OPENMP
+            std::lock_guard<std::mutex> lock(io_mutex);
+#endif
             std::cerr << "  Error parsing target: " << e.what() << "\n";
             ++n_fail;
             continue;
         }
 
         if (tgt_cas.size() < 3) {
-            std::cerr << "  Skipping: fewer than 3 Cα atoms (" << tgt_cas.size() << ")\n";
+#ifdef _OPENMP
+            std::lock_guard<std::mutex> lock(io_mutex);
+#endif
+            std::cerr << "  Skipping " << tgt_path << ": fewer than 3 Cα atoms ("
+                      << tgt_cas.size() << ")\n";
             ++n_fail;
             continue;
         }
 
-        // Chain compatibility check
+        // Chain compatibility check (warning only)
         if (tgt_cas.size() != ref_cas.size()) {
-            std::cerr << "  Warning: Cα count mismatch (ref=" << ref_cas.size()
-                      << ", tgt=" << tgt_cas.size()
+#ifdef _OPENMP
+            std::lock_guard<std::mutex> lock(io_mutex);
+#endif
+            std::cerr << "  Warning: " << tgt_path << " Cα count mismatch (ref="
+                      << ref_cas.size() << ", tgt=" << tgt_cas.size()
                       << "). Proceeding with mode comparison up to min.\n";
         }
 
+        // TENCoM build + diagonalise (thread-safe, no shared state)
         auto tgt_coords = ca_to_coords(tgt_cas);
         tencm::TorsionalENM tgt_enm;
         tgt_enm.build_from_ca(tgt_coords, cutoff, k0);
 
         if (!tgt_enm.is_built()) {
-            std::cerr << "  Error: TENCoM build failed on target.\n";
+#ifdef _OPENMP
+            std::lock_guard<std::mutex> lock(io_mutex);
+#endif
+            std::cerr << "  Error: TENCoM build failed on " << tgt_path << "\n";
             ++n_fail;
             continue;
         }
 
-        // Compute FlexibilityMode
+        // Compute FlexibilityMode (independent per target)
         FlexibilityMode fm = compute_flexibility_mode(ref_enm, tgt_enm, tgt_path, temperature);
 
-        // Console output
-        if (!quiet) {
-            output_flexibility_mode(fm, ref_path, std::cout);
-        } else {
-            std::cout << "  ΔS_vib = " << std::fixed << std::setprecision(6)
-                      << fm.delta_S_vib << " kcal/mol/K"
-                      << "  ΔF_vib = " << fm.delta_F_vib << " kcal/mol\n";
+        // Console output (serialised)
+        {
+#ifdef _OPENMP
+            std::lock_guard<std::mutex> lock(io_mutex);
+#endif
+            std::cout << "─── Processing: " << tgt_path << " ───\n";
+            if (!quiet) {
+                output_flexibility_mode(fm, ref_path, std::cout);
+            } else {
+                std::cout << "  ΔS_vib = " << std::fixed << std::setprecision(6)
+                          << fm.delta_S_vib << " kcal/mol/K"
+                          << "  ΔF_vib = " << fm.delta_F_vib << " kcal/mol\n";
+            }
         }
 
-        // File outputs
-        // Extract basename from target path
+        // File outputs (independent per target, no lock needed)
         std::string basename = tgt_path;
         auto slash = basename.find_last_of("/\\");
         if (slash != std::string::npos) basename = basename.substr(slash + 1);
@@ -638,10 +675,10 @@ int main(int argc, char* argv[])
 
     // ── Summary ────────────────────────────────────────────────────────────
     std::cout << "\n=== Summary ===\n"
-              << "  Processed: " << n_success << " / " << target_paths.size() << " targets\n";
-    if (n_fail > 0)
-        std::cout << "  Failed:    " << n_fail << "\n";
+              << "  Processed: " << n_success.load() << " / " << target_paths.size() << " targets\n";
+    if (n_fail.load() > 0)
+        std::cout << "  Failed:    " << n_fail.load() << "\n";
     std::cout << "\n";
 
-    return n_fail > 0 ? 1 : 0;
+    return n_fail.load() > 0 ? 1 : 0;
 }

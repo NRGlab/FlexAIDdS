@@ -302,6 +302,7 @@ if(FLEXAIDS_USE_CUDA)
     target_sources(FlexAID PRIVATE
         LIB/cuda_eval.cu                          # existing CF batch kernel
         LIB/ShannonThermoStack/shannon_cuda.cu    # Shannon entropy histogram kernel
+        LIB/tencm_cuda.cu                         # TENCoM contact discovery + Hessian assembly
     )
     target_compile_definitions(FlexAID PRIVATE FLEXAIDS_USE_CUDA)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
@@ -311,7 +312,7 @@ if(FLEXAIDS_USE_CUDA)
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_STANDARD 17)
     target_link_libraries(FlexAID PRIVATE CUDA::cudart CUDA::cudadevrt)
-    message(STATUS "CUDA enabled — CF batch kernel + Shannon histogram kernel")
+    message(STATUS "CUDA enabled — CF batch + Shannon histogram + TENCoM Hessian kernels")
 endif()
 
 # ─── Metal sources ──────────────────────────────────────────────────────
@@ -332,6 +333,13 @@ if(FLEXAIDS_USE_METAL)
     target_sources(FlexAID PRIVATE LIB/ShannonThermoStack/ShannonMetalBridge.mm)
     target_compile_definitions(FlexAID PRIVATE FLEXAIDS_HAS_METAL_SHANNON)
     set_source_files_properties(LIB/ShannonThermoStack/ShannonMetalBridge.mm PROPERTIES
+        LANGUAGE OBJCXX
+        COMPILE_FLAGS "-std=c++20 -fno-objc-arc"
+    )
+    # TENCoM Metal bridge (GPU contact discovery + Hessian assembly)
+    target_sources(FlexAID PRIVATE LIB/tencm_metal.mm)
+    target_compile_definitions(FlexAID PRIVATE FLEXAIDS_HAS_METAL_TENCM)
+    set_source_files_properties(LIB/tencm_metal.mm PROPERTIES
         LANGUAGE OBJCXX
         COMPILE_FLAGS "-std=c++20 -fno-objc-arc"
     )
@@ -447,6 +455,25 @@ if(ENABLE_TENCOM_TOOL)
     if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
         target_link_libraries(tENCoM PRIVATE Eigen3::Eigen)
         target_compile_definitions(tENCoM PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
+    # CUDA GPU acceleration for large proteins (N > 256 residues)
+    if(FLEXAIDS_USE_CUDA)
+        target_sources(tENCoM PRIVATE LIB/tencm_cuda.cu)
+        target_compile_definitions(tENCoM PRIVATE FLEXAIDS_USE_CUDA)
+        set_target_properties(tENCoM PROPERTIES
+            CUDA_SEPARABLE_COMPILATION ON
+            CUDA_STANDARD 17)
+        target_link_libraries(tENCoM PRIVATE CUDA::cudart CUDA::cudadevrt)
+    endif()
+    # Metal GPU acceleration (macOS)
+    if(FLEXAIDS_USE_METAL)
+        target_sources(tENCoM PRIVATE LIB/tencm_metal.mm)
+        target_compile_definitions(tENCoM PRIVATE FLEXAIDS_HAS_METAL_TENCM)
+        set_source_files_properties(LIB/tencm_metal.mm PROPERTIES
+            LANGUAGE OBJCXX
+            COMPILE_FLAGS "-std=c++20 -fno-objc-arc")
+        target_link_libraries(tENCoM PRIVATE
+            ${METAL_LIBRARY} ${FOUNDATION_LIBRARY} ${METALKIT_LIBRARY})
     endif()
     message(STATUS "tENCoM tool enabled — build target: tENCoM")
 endif()
@@ -594,7 +621,6 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME TENCoMDiffTests COMMAND test_tencom_diff)
 
-<<<<<<< HEAD
     # test_ptm_attachment — PTMAttachment module tests
     add_executable(test_ptm_attachment
         tests/test_ptm_attachment.cpp
