@@ -410,13 +410,27 @@ Covers Volta through Hopper. Good coverage, but binary size grows with each targ
 - Bridge code wraps `StatMechEngine` with Python-friendly interface
 - `@requires_core` marker for graceful skip when bindings not built
 
-### 10.3 Potential Issues
+### 10.3 Confirmed Issues
 
-1. **GIL management**: If pybind11 bindings hold the GIL during long-running C++ computations (e.g., `StatMechEngine.compute()`), Python threads will be blocked. Should use `py::call_guard<py::gil_scoped_release>()` for compute-heavy functions.
+1. **`to_numpy()` creates copies** (`core_bindings.cpp:27-29`): The helper `py::array_t<T>(vec.size(), vec.data())` copies data. Should use `py::capsule` for zero-copy views when the C++ vector outlives the numpy array.
 
-2. **Data copying**: Check if numpy arrays passed to/from C++ are zero-copy via buffer protocol or if unnecessary copies occur.
+2. **Per-sample conversion overhead** (`thermodynamics.py:195-204`): `add_samples()` converts each energy to `float(e)` individually in a Python loop before calling `self._engine.add_sample()`. Should accept `py::array_t<double>` for batch ingestion directly into the C++ engine.
 
-3. **Import overhead**: Setup correctly separates pure Python modules from C++ extension. No unnecessary imports at package level.
+3. **Repeated thermodynamics computation** (`thermodynamics.py:224-234`): `boltzmann_weights()` calls `compute()` internally, so calling `compute()` then `boltzmann_weights()` recomputes the partition function twice.
+
+4. **Numpy arrays rebuilt on every property access** (`io.py:302,315,477`): `Atom.coords`, `PDBStructure.coords`, and `SphereRecord.coords` create new `np.array()` on every access. Should cache after first construction.
+
+5. **O(n²) chain ID deduplication** (`io.py:330-335`): Uses list-based membership test instead of `set`.
+
+6. **GIL management**: If pybind11 bindings hold the GIL during long-running C++ computations, Python threads will be blocked. Should use `py::call_guard<py::gil_scoped_release>()` for compute-heavy functions.
+
+7. **Duplicate imports** (`__init__.py:3,48-49`): `BindingModeResult`, `DockingResult`, `PoseResult` imported twice — suggests incomplete refactoring.
+
+### 10.4 Test Suite
+
+- 17 test files (~3500 lines) run serially — no `pytest-xdist` configured
+- Several fixtures use function scope where module/session scope would suffice
+- Fixture `encom_files` generates data via string joining instead of pre-generated binary fixtures
 
 ---
 
@@ -431,36 +445,40 @@ Covers Volta through Hopper. Good coverage, but binary size grows with each targ
 | 3 | Use `std::move()` for vector in FOPTICS | `FOPTICS.cpp:115,125` | Eliminates unnecessary copies |
 | 4 | Add LTO build option | `CMakeLists.txt` | ~5-15% runtime improvement |
 | 5 | Make RNG thread-local | `FOPTICS.cpp:8-9` | Fixes thread-safety bug |
+| 6 | Cache numpy coords in Python properties | `io.py:302,315,477` | Eliminates repeated array creation |
+| 7 | Fix O(n²) chain ID dedup to use set | `io.py:330-335` | O(n) instead of O(n²) |
 
 ### High Impact, Medium Effort
 
 | # | Recommendation | Files | Expected Impact |
 |---|---------------|-------|-----------------|
-| 6 | Replace Metal `waitUntilCompleted` with async | `metal_eval.mm:342` | Enables GPU-CPU pipelining |
-| 7 | Replace manual SIMD gathers with native gather | `CavityDetect.cpp:92-98` | ~15-20% SIMD throughput gain |
-| 8 | Add runtime CPU dispatch | New file + CMakeLists.txt | Portable AVX2/AVX-512 binaries |
-| 9 | Split `atom_struct` hot/cold | `flexaid.h:175-203` | ~2-5× cache efficiency in scoring |
-| 10 | Add CI caching (apt, brew, ccache) | `.github/workflows/ci.yml` | Major CI time savings |
+| 8 | Replace Metal `waitUntilCompleted` with async | `metal_eval.mm:342` | Enables GPU-CPU pipelining |
+| 9 | Replace manual SIMD gathers with native gather | `CavityDetect.cpp:92-98` | ~15-20% SIMD throughput gain |
+| 10 | Use zero-copy buffers in pybind11 `to_numpy()` | `core_bindings.cpp:27-29` | Eliminates memory duplication |
+| 11 | Batch `add_samples()` via `py::array_t<double>` | `thermodynamics.py:195-204`, bindings | Eliminates per-sample Python overhead |
+| 12 | Add runtime CPU dispatch | New file + CMakeLists.txt | Portable AVX2/AVX-512 binaries |
+| 13 | Split `atom_struct` hot/cold | `flexaid.h:175-203` | ~2-5× cache efficiency in scoring |
+| 14 | Add CI caching (apt, brew, ccache) | `.github/workflows/ci.yml` | Major CI time savings |
 
 ### Medium Impact, Higher Effort
 
 | # | Recommendation | Files | Expected Impact |
 |---|---------------|-------|-----------------|
-| 11 | Fuse Shannon histogram + entropy on GPU | `shannon_cuda.cu`, `shannon_metal.metal` | Eliminates CPU readback |
-| 12 | Replace energy_values linked list with array | `flexaid.h:131-135`, `read_emat.cpp` | Cache-friendly interpolation |
-| 13 | Add sanitizer CI builds (ASan, UBSan) | `.github/workflows/ci.yml` | Bug prevention |
-| 14 | SoA data layout for atom coordinates | `flexaid.h`, scoring functions | Optimal vectorization |
-| 15 | Replace `NEW`/`FREE` macros with RAII | `flexaid.h:70-75`, all callers | Memory safety |
+| 15 | Fuse Shannon histogram + entropy on GPU | `shannon_cuda.cu`, `shannon_metal.metal` | Eliminates CPU readback |
+| 16 | Replace energy_values linked list with array | `flexaid.h:131-135`, `read_emat.cpp` | Cache-friendly interpolation |
+| 17 | Add sanitizer CI builds (ASan, UBSan) | `.github/workflows/ci.yml` | Bug prevention |
+| 18 | SoA data layout for atom coordinates | `flexaid.h`, scoring functions | Optimal vectorization |
+| 19 | Replace `NEW`/`FREE` macros with RAII | `flexaid.h:70-75`, all callers | Memory safety |
 
 ### Low Priority / Future
 
 | # | Recommendation | Files | Expected Impact |
 |---|---------------|-------|-----------------|
-| 16 | Re-enable Sugar Pucker AVX-512 | `SugarPucker.cpp:91-94` | Marginal (5-element arrays) |
-| 17 | Add PGO support | `CMakeLists.txt` | Requires profiling workflow |
-| 18 | pybind11 GIL release guards | `python/bindings/` | Python threading performance |
-| 19 | Precompiled headers for `flexaid.h` | `CMakeLists.txt` | Build time improvement |
-| 20 | Standardize OpenMP schedules | Multiple files | Minor load-balance improvement |
+| 20 | Re-enable Sugar Pucker AVX-512 | `SugarPucker.cpp:91-94` | Marginal (5-element arrays) |
+| 21 | Add PGO support | `CMakeLists.txt` | Requires profiling workflow |
+| 22 | pybind11 GIL release guards | `python/bindings/` | Python threading performance |
+| 23 | Add pytest-xdist for parallel tests | `python/tests/` | ~4-8× test suite speedup |
+| 24 | Standardize OpenMP schedules | Multiple files | Minor load-balance improvement |
 
 ---
 
