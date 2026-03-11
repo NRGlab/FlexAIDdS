@@ -254,6 +254,8 @@ target_sources(FlexAID PRIVATE
         LIB/Mol2Reader.cpp
         # ── CavityDetect: native SURFNET cavity detection ──
         LIB/CavityDetect/CavityDetect.cpp
+        # ── Unified runtime hardware dispatch ──
+        LIB/HardwareDispatch.cpp
 )
 
 target_include_directories(FlexAID PRIVATE
@@ -460,6 +462,33 @@ if(ENABLE_VCFBATCH_BENCHMARK)
     message(STATUS "VoronoiCFBatch benchmark enabled — build target: benchmark_vcfbatch")
 endif()
 
+# ─── Dispatch Benchmark (optional standalone binary) ─────────────────────────
+option(ENABLE_DISPATCH_BENCHMARK "Build the hardware dispatch benchmark binary" OFF)
+if(ENABLE_DISPATCH_BENCHMARK)
+    add_executable(benchmark_dispatch
+        LIB/benchmark_dispatch.cpp
+        LIB/HardwareDispatch.cpp
+    )
+    target_include_directories(benchmark_dispatch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    if(MSVC)
+        target_compile_options(benchmark_dispatch PRIVATE /O2 /fp:fast)
+    else()
+        target_compile_options(benchmark_dispatch PRIVATE -O3 -ffast-math)
+    endif()
+    flexaids_configure_simd(benchmark_dispatch)
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(benchmark_dispatch PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+        target_link_libraries(benchmark_dispatch PRIVATE Eigen3::Eigen)
+        target_compile_definitions(benchmark_dispatch PRIVATE FLEXAIDS_HAS_EIGEN)
+    elseif(FLEXAIDS_USE_EIGEN AND EIGEN3_FOUND)
+        target_include_directories(benchmark_dispatch PRIVATE ${EIGEN3_INCLUDE_DIRS})
+        target_compile_definitions(benchmark_dispatch PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
+    message(STATUS "Dispatch benchmark enabled — build target: benchmark_dispatch")
+endif()
+
 # ─── Unit Tests (GoogleTest) ───────────────────────────────────────────────
 option(BUILD_TESTING "Build unit tests (requires GoogleTest)" OFF)
 if(BUILD_TESTING)
@@ -532,5 +561,31 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME TENCoMDiffTests COMMAND test_tencom_diff)
 
-    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_tencom_diff")
+    # test_unified_dispatch — runtime HardwareDispatcher tests
+    add_executable(test_unified_dispatch
+        tests/test_unified_dispatch.cpp
+        LIB/HardwareDispatch.cpp
+    )
+    target_include_directories(test_unified_dispatch PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_link_libraries(test_unified_dispatch PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_unified_dispatch PRIVATE /O2)
+    else()
+        target_compile_options(test_unified_dispatch PRIVATE -O2)
+    endif()
+    flexaids_configure_simd(test_unified_dispatch)
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_unified_dispatch PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+        target_link_libraries(test_unified_dispatch PRIVATE Eigen3::Eigen)
+        target_compile_definitions(test_unified_dispatch PRIVATE FLEXAIDS_HAS_EIGEN)
+    elseif(FLEXAIDS_USE_EIGEN AND EIGEN3_FOUND)
+        target_include_directories(test_unified_dispatch PRIVATE ${EIGEN3_INCLUDE_DIRS})
+        target_compile_definitions(test_unified_dispatch PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
+    add_test(NAME UnifiedDispatchTests COMMAND test_unified_dispatch)
+
+    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_tencom_diff, test_unified_dispatch")
 endif()
