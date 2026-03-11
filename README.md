@@ -12,13 +12,19 @@
 - **Genetic algorithm docking** with configurable population, crossover, mutation, and selection
 - **Voronoi contact function (CF)** for shape complementarity scoring
 - **Statistical mechanics engine** — partition function, free energy, heat capacity, conformational entropy
-- **Torsional ENCoM (TENCM)** backbone flexibility without full rotamer rebuilds
+- **Torsional ENCoM (tENCoM)** backbone flexibility without full rotamer rebuilds + standalone vibrational entropy differential tool
 - **Shannon entropy + torsional vibrational entropy stack** for thermodynamic scoring
+- **Full flexibility by default** — ligand torsions, ring conformers, chirality, intramolecular scoring, entropy at 300 K
+- **Single JSON config** — one file overrides all parameters; `--rigid` flag for fast screening
 - **Ligand ring flexibility** — non-aromatic ring conformer sampling and sugar pucker
 - **Chiral center sampling** — explicit R/S stereocenter discrimination in the GA
+- **Multi-format ligand input** — MOL2, SDF/MOL (V2000), and legacy INP formats
+- **Automatic cavity detection** — SURFNET gap-sphere algorithm with Metal GPU acceleration
 - **NATURaL co-translational assembly** — co-translational/co-transcriptional docking with ribosome-speed elongation (Zhao 2011) and Sec translocon TM insertion (Hessa 2007)
-- **FastOPTICS** density-based clustering of docking poses
+- **FastOPTICS + Density Peak clustering** of docking poses
 - **Hardware acceleration** — CUDA, Metal (macOS), AVX-512, AVX2, OpenMP, Eigen3
+- **Ultra-fast HPC binaries** — LTO + `-march=native` for both FlexAIDdS and tENCoM
+- **Python package** (`flexaidds`) — result I/O, thermodynamics, ENCoM, docking API, PyMOL visualization
 
 ## Repository Structure
 
@@ -32,6 +38,11 @@ FlexAIDdS/
 │   ├── BindingMode.cpp/h    # Pose clustering & thermodynamic integration
 │   ├── encom.cpp/h          # Elastic network contact model (vibrational entropy)
 │   ├── tencm.cpp/h          # Torsional ENCoM backbone flexibility
+│   ├── config_defaults.h    # Single source of truth for all default parameters
+│   ├── config_parser.cpp/h  # JSON config loading, merging, and struct mapping
+│   ├── SdfReader.cpp/h      # SDF/MOL V2000 multi-format ligand reader
+│   ├── CleftDetector.cpp/h  # Binding cleft/pocket detection
+│   ├── FOPTICS.cpp/h        # FastOPTICS density-based clustering
 │   ├── ShannonThermoStack/  # Shannon configurational entropy + HW acceleration
 │   ├── LigandRingFlex/      # Non-aromatic ring & sugar pucker sampling
 │   ├── ChiralCenter/        # R/S stereocenter discrimination
@@ -41,6 +52,13 @@ FlexAIDdS/
 ├── tests/                  # C++ unit tests (GoogleTest)
 ├── python/                 # Python package & bindings
 │   ├── flexaidds/           # Python package (API, models, CLI)
+│   │   ├── docking.py       # High-level docking API
+│   │   ├── encom.py         # ENCoM vibrational entropy interface
+│   │   ├── io.py            # Input/output utilities
+│   │   ├── models.py        # Data models (PoseResult, BindingModeResult, DockingResult)
+│   │   ├── results.py       # Result file parsing & loading
+│   │   ├── thermodynamics.py # StatMechEngine & thermodynamic calculations
+│   │   └── visualization.py # PyMOL visualization helpers
 │   ├── bindings/            # pybind11 C++ bridge
 │   ├── tests/               # Pytest test suite
 │   ├── setup.py             # setuptools config
@@ -199,13 +217,33 @@ tENCoM reference.pdb target1.pdb [target2.pdb ...] [-T temp] [-r cutoff] [-k k0]
 ```python
 import flexaidds
 
+# High-level docking
 results = flexaidds.dock(
     receptor='receptor.pdb',
     ligand='ligand.mol2',
     binding_site='auto',
     compute_entropy=True
 )
+
+# Load and analyze existing results
+from flexaidds import load_results
+docking = load_results('output_prefix')
+for mode in docking.binding_modes:
+    print(f"Mode {mode.rank}: dG={mode.free_energy:.2f}, S={mode.entropy:.3f}")
+
+# Thermodynamic analysis
+from flexaidds import StatMechEngine
+engine = StatMechEngine(temperature=300)
+engine.add_energies(pose_energies)
+print(f"Free energy: {engine.free_energy():.2f} kcal/mol")
+
+# ENCoM vibrational entropy
+from flexaidds import ENCoMEngine
+encom = ENCoMEngine()
+delta_s = encom.compute_delta_s('apo.pdb', 'holo.pdb')
 ```
+
+**Available modules**: `docking`, `encom`, `io`, `models`, `results`, `thermodynamics`, `visualization`
 
 ## Testing
 
@@ -491,6 +529,22 @@ Unified ring flexibility for the GA: non-aromatic ring conformer sampling (chair
 
 Explicit R/S stereocenter sampling. Detects sp3 tetrahedral chiral centers in the ligand, encodes each as a single GA bit (R=0, S=1), and applies an energy penalty for incorrect stereochemistry (~15-25 kcal/mol per wrong center). Low mutation rate (1-2%) reflects the high inversion barrier.
 
+### CavityDetect (SURFNET)
+
+Automatic binding site detection using the SURFNET gap-sphere algorithm. Places spheres between atom pairs within a distance range, filters by burial, and clusters surviving spheres into cavities ranked by volume. Metal GPU acceleration on Apple Silicon via Objective-C++ bridge (`CavityDetectMetalBridge.mm`), with CPU fallback.
+
+### CleftDetector
+
+Binding cleft and pocket identification for receptor surfaces. Identifies concave regions suitable for ligand binding and provides center/radius definitions for the GA search space (`RNGOPT LOCCDT` mode).
+
+### SdfReader
+
+Multi-format ligand input supporting SDF (Structure Data File) and MOL V2000 formats. Parses atom blocks, bond blocks, and property fields. Complements the existing MOL2 and legacy INP readers for broader chemical database compatibility.
+
+### FastOPTICS (FOPTICS)
+
+Density-based hierarchical clustering of docking poses using the FastOPTICS algorithm. Alternative to CF (centroid-first) clustering — selected via `clustering_algorithm: "FO"` in JSON config or `CLUSTA FO` in legacy mode.
+
 ### NATURaL (co-translational assembly)
 
 **N**ative **A**ssembly of co-**T**ranscriptionally/co-**T**ranslationally **U**nified **R**eceptor-**L**igand module. Auto-detects nucleotide ligands or nucleic acid receptors and activates co-translational DualAssembly mode:
@@ -511,8 +565,10 @@ Explicit R/S stereocenter sampling. Detects sp3 tetrahedral chiral centers in th
 2. **NRGsuite PyMOL plugin**:
    > Gaudreault, Morency & Najmanovich (2015). *Bioinformatics* 31(23):3856-8. [DOI:10.1093/bioinformatics/btv458](https://doi.org/10.1093/bioinformatics/btv458)
 
-3. **Shannon entropy extension** (submitted):
-   > Morency et al. (2026). "Information-Theoretic Entropy in Molecular Docking." *J. Chem. Theory Comput.* (in review)
+3. **FlexAID∆S: Entropy-driven molecular docking** (preprint pending):
+   > Morency & Bhatt (2026). "FlexAID∆S: Information-Theoretic Entropy Improves Molecular Docking Accuracy and Binding Mode Prediction." Preprint in preparation.
+
+   *Status*: Manuscript in preparation. Preprint expected on bioRxiv/ChemRxiv in 2026. This paper introduces the statistical mechanics framework, Shannon entropy scoring, and benchmark results on ITC-187 and CASF-2016.
 
 ### Related Work (Inspiration Only)
 
