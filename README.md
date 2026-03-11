@@ -248,7 +248,7 @@ To **skip** co-translational/co-transcriptional chain growth and treat the recep
 
 Or via JSON config: `"advanced": { "assume_folded": true }`
 
-### Python API (Phase 2 — in progress)
+### Python API (Phase 2)
 
 ```python
 import flexaidds

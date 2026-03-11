@@ -159,12 +159,12 @@ Key test files in `python/tests/`:
 
 - **Legacy**: `./FlexAID config.inp ga.inp`
 - **CLI**: `./flexaids dock receptor.pdb ligand.mol2`
-- **Python**: `import flexaidds` (Phase 2, partially complete)
+- **Python**: `import flexaidds` (Phase 2, complete)
 
 ### Development Phases
 
 - **Phase 1** (Complete): StatMechEngine integration
-- **Phase 2** (In Progress): Python bindings & result I/O
+- **Phase 2** (Complete): Python bindings, result I/O, `dock()` API, ENCoM `compute_delta_s()`
 - **Phase 3** (Planned): ENCoM vibrational entropy integration
 
 ## Key Files to Know
