@@ -62,6 +62,14 @@ class PoseResult:
     temperature: Optional[float] = None
     remarks: Dict[str, Any] = field(default_factory=dict)
 
+    def __repr__(self) -> str:
+        cf_str = f" CF={self.cf:.3f}" if self.cf is not None else ""
+        fe_str = f" F={self.free_energy:.3f}" if self.free_energy is not None else ""
+        return (
+            f"<PoseResult mode={self.mode_id} rank={self.pose_rank}"
+            f"{cf_str}{fe_str}>"
+        )
+
 
 @dataclass(frozen=True)
 class BindingModeResult:
@@ -129,6 +137,13 @@ class BindingModeResult:
             return min(scored, key=lambda p: p.cf_app)
         return self.poses[0] if self.poses else None
 
+    def __repr__(self) -> str:
+        fe_str = f" F={self.free_energy:.3f}" if self.free_energy is not None else ""
+        return (
+            f"<BindingModeResult mode={self.mode_id} rank={self.rank} "
+            f"n_poses={self.n_poses}{fe_str}>"
+        )
+
 
 @dataclass(frozen=True)
 class DockingResult:
@@ -152,6 +167,12 @@ class DockingResult:
     binding_modes: List[BindingModeResult]
     temperature: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return (
+            f"<DockingResult dir={self.source_dir.name!r} "
+            f"n_modes={self.n_modes}>"
+        )
 
     @property
     def n_modes(self) -> int:
