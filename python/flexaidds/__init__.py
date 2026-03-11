@@ -2,6 +2,7 @@
 
 from .models import BindingModeResult, DockingResult, PoseResult
 from .results import load_results
+from .__version__ import __version__
 
 try:
     from ._core import (
@@ -33,6 +34,16 @@ except ImportError:
     kB_kcal = 0.0019872041
     kB_SI = 1.380649e-23
     HAS_CORE_BINDINGS = False
+    # Fall back to pure-Python implementations where available
+    from .thermodynamics import StatMechEngine, Thermodynamics, kB_kcal, kB_SI
+    BoltzmannLUT = None
+    ENCoMEngine = None
+    NormalMode = None
+    Replica = None
+    State = None
+    TIPoint = None
+    VibrationalEntropy = None
+    WHAMBin = None
 
 from .models import BindingModeResult, DockingResult, PoseResult
 from .results import load_results
