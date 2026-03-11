@@ -532,5 +532,98 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME TENCoMDiffTests COMMAND test_tencom_diff)
 
-    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_tencom_diff")
+    # test_encom — ENCoM vibrational entropy engine tests
+    add_executable(test_encom
+        tests/test_encom.cpp
+        LIB/encom.cpp
+    )
+    target_include_directories(test_encom PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_link_libraries(test_encom PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_encom PRIVATE /O2)
+    else()
+        target_compile_options(test_encom PRIVATE -O2)
+    endif()
+    add_test(NAME ENCoMTests COMMAND test_encom)
+
+    # test_ring_conformer_library — RingConformerLibrary + ring detection tests
+    add_executable(test_ring_conformer_library
+        tests/test_ring_conformer_library.cpp
+        LIB/LigandRingFlex/RingConformerLibrary.cpp
+    )
+    target_include_directories(test_ring_conformer_library PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/LigandRingFlex
+    )
+    target_link_libraries(test_ring_conformer_library PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_ring_conformer_library PRIVATE /O2)
+    else()
+        target_compile_options(test_ring_conformer_library PRIVATE -O2)
+    endif()
+    add_test(NAME RingConformerLibraryTests COMMAND test_ring_conformer_library)
+
+    # test_sugar_pucker — SugarPucker Cremer-Pople pseudorotation tests
+    add_executable(test_sugar_pucker
+        tests/test_sugar_pucker.cpp
+        LIB/LigandRingFlex/SugarPucker.cpp
+    )
+    target_include_directories(test_sugar_pucker PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/LigandRingFlex
+    )
+    target_link_libraries(test_sugar_pucker PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_sugar_pucker PRIVATE /O2)
+    else()
+        target_compile_options(test_sugar_pucker PRIVATE -O2)
+    endif()
+    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+        target_link_libraries(test_sugar_pucker PRIVATE Eigen3::Eigen)
+        target_compile_definitions(test_sugar_pucker PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
+    add_test(NAME SugarPuckerTests COMMAND test_sugar_pucker)
+
+    # test_chiral_center — ChiralCenterGene R/S stereocenter tests
+    add_executable(test_chiral_center
+        tests/test_chiral_center.cpp
+        LIB/ChiralCenter/ChiralCenterGene.cpp
+    )
+    target_include_directories(test_chiral_center PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ChiralCenter
+    )
+    target_link_libraries(test_chiral_center PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_chiral_center PRIVATE /O2)
+    else()
+        target_compile_options(test_chiral_center PRIVATE -O2)
+    endif()
+    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+        target_link_libraries(test_chiral_center PRIVATE Eigen3::Eigen)
+        target_compile_definitions(test_chiral_center PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
+    add_test(NAME ChiralCenterTests COMMAND test_chiral_center)
+
+    # test_cavity_detect — CavityDetect SURFNET cavity detection tests
+    add_executable(test_cavity_detect
+        tests/test_cavity_detect.cpp
+        LIB/CavityDetect/CavityDetect.cpp
+    )
+    target_include_directories(test_cavity_detect PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
+    )
+    target_link_libraries(test_cavity_detect PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_cavity_detect PRIVATE /O2)
+    else()
+        target_compile_options(test_cavity_detect PRIVATE -O2)
+    endif()
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_cavity_detect PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    add_test(NAME CavityDetectTests COMMAND test_cavity_detect)
+
+    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_tencom_diff, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect")
 endif()
