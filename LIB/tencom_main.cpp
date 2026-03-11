@@ -23,10 +23,12 @@
 #include "encom.h"
 
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <vector>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
 
 // ─── CLI argument parsing ───────────────────────────────────────────────────
 
@@ -58,6 +60,18 @@ static void print_usage(const char* progname) {
         << "  Summary table         Printed to stdout\n\n";
 }
 
+// Safe numeric parser — exits with clear error on invalid input
+static double parse_double(const char* str, const char* flag) {
+    char* endptr = nullptr;
+    errno = 0;
+    double val = std::strtod(str, &endptr);
+    if (errno != 0 || endptr == str || *endptr != '\0') {
+        std::cerr << "Error: invalid numeric value for " << flag << ": \"" << str << "\"\n";
+        std::exit(1);
+    }
+    return val;
+}
+
 static Options parse_args(int argc, char* argv[]) {
     Options opts;
 
@@ -72,13 +86,29 @@ static Options parse_args(int argc, char* argv[]) {
         if (arg == "-h" || arg == "--help") {
             print_usage(argv[0]);
             std::exit(0);
-        } else if (arg == "-T" && i + 1 < argc) {
-            opts.temperature = std::atof(argv[++i]);
-        } else if (arg == "-r" && i + 1 < argc) {
-            opts.cutoff = static_cast<float>(std::atof(argv[++i]));
-        } else if (arg == "-k" && i + 1 < argc) {
-            opts.k0 = static_cast<float>(std::atof(argv[++i]));
-        } else if (arg == "-o" && i + 1 < argc) {
+        } else if (arg == "-T") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: -T requires a temperature value.\n";
+                std::exit(1);
+            }
+            opts.temperature = parse_double(argv[++i], "-T");
+        } else if (arg == "-r") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: -r requires a cutoff value.\n";
+                std::exit(1);
+            }
+            opts.cutoff = static_cast<float>(parse_double(argv[++i], "-r"));
+        } else if (arg == "-k") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: -k requires a spring constant value.\n";
+                std::exit(1);
+            }
+            opts.k0 = static_cast<float>(parse_double(argv[++i], "-k"));
+        } else if (arg == "-o") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: -o requires an output prefix.\n";
+                std::exit(1);
+            }
             opts.prefix = argv[++i];
         } else if (arg[0] == '-') {
             std::cerr << "Unknown option: " << arg << "\n";
@@ -93,6 +123,29 @@ static Options parse_args(int argc, char* argv[]) {
         std::cerr << "Error: reference PDB is required.\n";
         print_usage(argv[0]);
         std::exit(1);
+    }
+
+    // Validate numeric parameters
+    if (opts.temperature <= 0.0) {
+        std::cerr << "Error: temperature must be positive (got " << opts.temperature << " K).\n";
+        std::exit(1);
+    }
+    if (opts.cutoff <= 0.0f) {
+        std::cerr << "Error: contact cutoff must be positive (got " << opts.cutoff << " A).\n";
+        std::exit(1);
+    }
+    if (opts.k0 <= 0.0f) {
+        std::cerr << "Error: spring constant must be positive (got " << opts.k0 << ").\n";
+        std::exit(1);
+    }
+
+    // Verify PDB files exist
+    for (const auto& path : opts.pdb_files) {
+        std::ifstream test(path);
+        if (!test.is_open()) {
+            std::cerr << "Error: cannot open PDB file: " << path << "\n";
+            std::exit(1);
+        }
     }
 
     return opts;

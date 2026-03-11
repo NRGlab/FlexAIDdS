@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <numeric>
+#include <iostream>
 #include <cmath>
 
 namespace tencom_diff {
@@ -59,9 +60,26 @@ DifferentialResult compute_differential(
                        - result.svib_ref.S_vib_kcal_mol_K;
     result.delta_F_vib = -temperature_K * result.delta_S_vib;
 
+    // ── Dimension mismatch warnings ─────────────────────────────────────────
+    int ref_nres = ref_enm.n_residues();
+    int tgt_nres = tgt_enm.n_residues();
+    if (ref_nres != tgt_nres) {
+        std::cerr << "  Warning: residue count mismatch (ref=" << ref_nres
+                  << ", tgt=" << tgt_nres << ") — mode overlaps will be NaN.\n";
+    }
+    int ref_nmodes = static_cast<int>(ref_modes.size());
+    int tgt_nmodes = static_cast<int>(tgt_modes.size());
+    if (ref_nmodes != tgt_nmodes) {
+        int diff_pct = std::abs(ref_nmodes - tgt_nmodes) * 100
+                       / std::max(ref_nmodes, tgt_nmodes);
+        if (diff_pct > 20) {
+            std::cerr << "  Warning: mode count differs by " << diff_pct
+                      << "% (ref=" << ref_nmodes << ", tgt=" << tgt_nmodes << ").\n";
+        }
+    }
+
     // ── Per-mode comparisons ────────────────────────────────────────────────
-    int n_compare = std::min(static_cast<int>(ref_modes.size()),
-                             static_cast<int>(tgt_modes.size()));
+    int n_compare = std::min(ref_nmodes, tgt_nmodes);
     bool dims_match = (ref_enm.n_bonds() == tgt_enm.n_bonds());
 
     result.mode_comparisons.reserve(n_compare);
