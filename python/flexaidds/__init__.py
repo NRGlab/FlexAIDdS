@@ -56,13 +56,6 @@ __all__ = [
     "kB_SI",
     # Availability flag
     "HAS_CORE_BINDINGS",
-    # Thermodynamics (always available via pure-Python fallback)
-    "StatMechEngine",
-    "Thermodynamics",
-    # ENCoM (always available via pure-Python fallback)
-    "ENCoMEngine",
-    "NormalMode",
-    "VibrationalEntropy",
 ]
 
 # C++-only modules (no pure-Python fallback)
