@@ -263,11 +263,11 @@ class TestENCoMEngineCpp:
 # ── Python-level ENCoM smoke test (no C++ needed) ────────────────────────────
 
 class TestENCoMPythonFallback:
-    """Verify that the ENCoM symbols are None (not missing) when C++ absent."""
+    """Verify that ENCoM symbols are always available (pure-Python fallback)."""
 
     def test_encom_symbols_accessible(self):
         import flexaidds as fds
-        # Should be importable either as a class or None
+        # Should always be importable as usable classes (never None)
         assert hasattr(fds, "ENCoMEngine")
         assert hasattr(fds, "NormalMode")
         assert hasattr(fds, "VibrationalEntropy")
@@ -280,3 +280,8 @@ class TestENCoMPythonFallback:
         assert fds.ENCoMEngine is ENCoMEngine
         assert fds.NormalMode is NormalMode
         assert fds.VibrationalEntropy is VibrationalEntropy
+        # Verify they are actually usable
+        mode = fds.NormalMode(index=1, eigenvalue=2.0)
+        assert mode.eigenvalue == 2.0
+        vs = fds.ENCoMEngine.total_entropy(0.003, 0.001)
+        assert abs(vs - 0.004) < 1e-15

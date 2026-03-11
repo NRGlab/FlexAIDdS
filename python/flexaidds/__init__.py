@@ -18,12 +18,9 @@ try:
 except ImportError:
     # Fallback when C++ extension is not built
     BoltzmannLUT = None
-    ENCoMEngine = None
-    NormalMode = None
     Replica = None
     State = None
     TIPoint = None
-    VibrationalEntropy = None
     WHAMBin = None
     kB_kcal = 0.001987206   # kcal mol⁻¹ K⁻¹
     kB_SI = 1.380649e-23    # J K⁻¹
@@ -59,9 +56,16 @@ __all__ = [
     "kB_SI",
     # Availability flag
     "HAS_CORE_BINDINGS",
+    # Thermodynamics (always available via pure-Python fallback)
+    "StatMechEngine",
+    "Thermodynamics",
+    # ENCoM (always available via pure-Python fallback)
+    "ENCoMEngine",
+    "NormalMode",
+    "VibrationalEntropy",
 ]
 
-# C++ core modules (only available when compiled)
+# C++-only modules (no pure-Python fallback)
 if HAS_CORE_BINDINGS:
     __all__.extend([
         "State",
