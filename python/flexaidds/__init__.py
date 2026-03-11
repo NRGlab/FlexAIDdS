@@ -21,6 +21,18 @@ try:
     )
     HAS_CORE_BINDINGS = True
 except ImportError:
+    BoltzmannLUT = None
+    ENCoMEngine = None
+    NormalMode = None
+    Replica = None
+    State = None
+    StatMechEngine = None
+    Thermodynamics = None
+    TIPoint = None
+    VibrationalEntropy = None
+    WHAMBin = None
+    kB_kcal = 0.0019872041
+    kB_SI = 1.380649e-23
     HAS_CORE_BINDINGS = False
     # Fall back to pure-Python implementations where available
     from .thermodynamics import StatMechEngine, Thermodynamics, kB_kcal, kB_SI
