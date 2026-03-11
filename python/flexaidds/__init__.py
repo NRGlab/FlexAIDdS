@@ -2,6 +2,7 @@
 
 from .models import BindingModeResult, DockingResult, PoseResult
 from .results import load_results
+from .tencom_results import FlexModeResult, FlexPopulationResult, parse_tencom_pdb, parse_tencom_json
 from .__version__ import __version__
 
 try:
@@ -54,6 +55,11 @@ __all__ = [
     "BindingModeResult",
     "DockingResult",
     "load_results",
+    # tENCoM results (always available, pure Python)
+    "FlexModeResult",
+    "FlexPopulationResult",
+    "parse_tencom_pdb",
+    "parse_tencom_json",
     # Physical constants (always available)
     "kB_kcal",
     "kB_SI",

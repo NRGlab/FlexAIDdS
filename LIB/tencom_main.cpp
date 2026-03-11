@@ -45,6 +45,7 @@ struct Options {
     bool   output_pdb   = true;
     bool   output_json  = false;
     bool   output_csv   = false;
+    int    verbosity    = 1;    // 0=quiet, 1=normal, 2=verbose
 };
 
 static void print_usage(const char* progname) {
@@ -62,6 +63,8 @@ static void print_usage(const char* progname) {
         << "  -o <prefix>   Output file prefix             (default: tencom)\n"
         << "  -f <format>   Output format: pdb, json, csv, all (default: pdb)\n"
         << "  --list <file> Read target PDB paths from file (one per line)\n"
+        << "  -v            Verbose output (per-mode eigenvalue lists, timing)\n"
+        << "  -q            Quiet output (summary table only)\n"
         << "  -h            Print this help and exit\n\n"
         << "Output:\n"
         << "  <prefix>_mode_N.pdb    PDB files with REMARK thermodynamic metadata\n"
@@ -167,6 +170,10 @@ static Options parse_args(int argc, char* argv[]) {
                 if (!pdb_line.empty())
                     opts.pdb_files.push_back(pdb_line);
             }
+        } else if (arg == "-v" || arg == "--verbose") {
+            opts.verbosity = 2;
+        } else if (arg == "-q" || arg == "--quiet") {
+            opts.verbosity = 0;
         } else if (arg == "-f") {
             if (i + 1 >= argc) {
                 std::cerr << "Error: -f requires a format: pdb, json, csv, or all.\n";
@@ -323,20 +330,24 @@ int main(int argc, char* argv[]) {
         opts.temperatures.push_back(opts.temperature);
     }
 
-    std::cout << "\n=== FlexAIDdS tENCoM — Vibrational Entropy Differential Tool ===\n";
-    if (opts.temperatures.size() > 1) {
-        std::cout << "Temperature scan: " << opts.temperatures.front()
-                  << " - " << opts.temperatures.back() << " K ("
-                  << opts.temperatures.size() << " points)\n";
-    } else {
-        std::cout << "Temperature: " << opts.temperatures[0] << " K\n";
+    int V = opts.verbosity;  // shorthand
+
+    if (V >= 1) {
+        std::cout << "\n=== FlexAIDdS tENCoM — Vibrational Entropy Differential Tool ===\n";
+        if (opts.temperatures.size() > 1) {
+            std::cout << "Temperature scan: " << opts.temperatures.front()
+                      << " - " << opts.temperatures.back() << " K ("
+                      << opts.temperatures.size() << " points)\n";
+        } else {
+            std::cout << "Temperature: " << opts.temperatures[0] << " K\n";
+        }
+        std::cout << "Contact cutoff: " << opts.cutoff << " A\n";
+        std::cout << "Spring constant k0: " << opts.k0 << "\n";
+        std::cout << "Full flexibility: ON\n\n";
     }
-    std::cout << "Contact cutoff: " << opts.cutoff << " A\n";
-    std::cout << "Spring constant k0: " << opts.k0 << "\n";
-    std::cout << "Full flexibility: ON\n\n";
 
     // ── Step 1: Read reference PDB ──────────────────────────────────────────
-    std::cout << "Reading reference: " << opts.pdb_files[0] << "\n";
+    if (V >= 1) std::cout << "Reading reference: " << opts.pdb_files[0] << "\n";
     tencom_pdb::CalphaStructure ref_struct;
     try {
         ref_struct = tencom_pdb::read_pdb_calpha(opts.pdb_files[0]);
@@ -344,10 +355,10 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error reading reference PDB: " << e.what() << "\n";
         return 1;
     }
-    std::cout << "  " << ref_struct.res_cnt << " residues (backbone atoms)\n";
+    if (V >= 1) std::cout << "  " << ref_struct.res_cnt << " residues (backbone atoms)\n";
 
     // ── Step 2: Build reference TorsionalENM ────────────────────────────────
-    std::cout << "Building reference TorsionalENM...\n";
+    if (V >= 1) std::cout << "Building reference TorsionalENM...\n";
     tencm::TorsionalENM ref_enm;
     ref_enm.build(ref_struct.atoms.data(), ref_struct.residues.data(),
                   ref_struct.res_cnt, opts.cutoff, opts.k0);
@@ -356,7 +367,20 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: failed to build reference ENM (need >= 3 residues).\n";
         return 1;
     }
-    std::cout << "  " << ref_enm.modes().size() << " normal modes computed\n";
+    if (V >= 1) std::cout << "  " << ref_enm.modes().size() << " normal modes computed\n";
+
+    if (V >= 2) {
+        // Verbose: print eigenvalue list
+        std::cout << "  Eigenvalues:";
+        const auto& modes = ref_enm.modes();
+        int n_show = std::min(static_cast<int>(modes.size()), 20);
+        for (int i = 0; i < n_show; ++i) {
+            std::cout << " " << std::setprecision(4) << modes[i].eigenvalue;
+        }
+        if (static_cast<int>(modes.size()) > n_show)
+            std::cout << " ... (" << modes.size() - n_show << " more)";
+        std::cout << "\n";
+    }
 
     // ── Step 3: Build target TorsionalENMs ──────────────────────────────────
     std::vector<tencm::TorsionalENM> tgt_enms;
@@ -364,7 +388,7 @@ int main(int argc, char* argv[]) {
     all_structures.push_back(std::move(ref_struct));
 
     for (size_t t = 1; t < opts.pdb_files.size(); ++t) {
-        std::cout << "\nReading target " << t << ": " << opts.pdb_files[t] << "\n";
+        if (V >= 1) std::cout << "\nReading target " << t << ": " << opts.pdb_files[t] << "\n";
 
         tencom_pdb::CalphaStructure tgt_struct;
         try {
@@ -373,7 +397,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "  Error reading target PDB: " << e.what() << " — skipping.\n";
             continue;
         }
-        std::cout << "  " << tgt_struct.res_cnt << " residues (backbone atoms)\n";
+        if (V >= 1) std::cout << "  " << tgt_struct.res_cnt << " residues (backbone atoms)\n";
 
         tencm::TorsionalENM tgt_enm;
         tgt_enm.build(tgt_struct.atoms.data(), tgt_struct.residues.data(),
@@ -383,7 +407,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "  Warning: failed to build target ENM — skipping.\n";
             continue;
         }
-        std::cout << "  " << tgt_enm.modes().size() << " normal modes computed\n";
+        if (V >= 1) std::cout << "  " << tgt_enm.modes().size() << " normal modes computed\n";
 
         tgt_enms.push_back(std::move(tgt_enm));
         all_structures.push_back(std::move(tgt_struct));
@@ -393,7 +417,7 @@ int main(int argc, char* argv[]) {
     for (size_t ti = 0; ti < opts.temperatures.size(); ++ti) {
         double T = opts.temperatures[ti];
         std::string suffix = "";
-        if (opts.temperatures.size() > 1) {
+        if (opts.temperatures.size() > 1 && V >= 1) {
             std::cout << "\n──── Temperature: " << T << " K ────\n";
             // Append temperature to output prefix for multi-T runs
             std::ostringstream ss;
@@ -430,11 +454,11 @@ int main(int argc, char* argv[]) {
                 ofs << "\n";
             }
             ofs.close();
-            std::cout << "\n  Wrote temperature scan: " << scan_file << "\n";
+            if (V >= 1) std::cout << "\n  Wrote temperature scan: " << scan_file << "\n";
         }
     }
 
-    std::cout << "\ntENCoM analysis complete.\n";
+    if (V >= 1) std::cout << "\ntENCoM analysis complete.\n";
 
     return 0;
 }
