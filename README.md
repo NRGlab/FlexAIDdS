@@ -566,7 +566,7 @@ Density-based hierarchical clustering of docking poses using the FastOPTICS algo
    > Gaudreault, Morency & Najmanovich (2015). *Bioinformatics* 31(23):3856-8. [DOI:10.1093/bioinformatics/btv458](https://doi.org/10.1093/bioinformatics/btv458)
 
 3. **FlexAID∆S: Entropy-driven molecular docking** (preprint pending):
-   > Morency & Bhatt (2026). "FlexAID∆S: Information-Theoretic Entropy Improves Molecular Docking Accuracy and Binding Mode Prediction." Preprint in preparation.
+   > Morency LP & Najmanovich RJ (2026). "FlexAID∆S: Information-Theoretic Entropy Improves Molecular Docking Accuracy and Binding Mode Prediction." Preprint in preparation.
 
    *Status*: Manuscript in preparation. Preprint expected on bioRxiv/ChemRxiv in 2026. This paper introduces the statistical mechanics framework, Shannon entropy scoring, and benchmark results on ITC-187 and CASF-2016.
 
