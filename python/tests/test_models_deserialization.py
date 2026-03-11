@@ -269,3 +269,81 @@ class TestDockingResultFromJson:
         assert restored.n_modes == 2
         assert restored.binding_modes[0].mode_id == 1
         assert restored.binding_modes[1].mode_id == 2
+
+
+# ===========================================================================
+# DockingResult.from_csv
+# ===========================================================================
+
+class TestDockingResultFromCsv:
+    def _make_result(self) -> DockingResult:
+        pose1 = PoseResult(path=Path("a.pdb"), mode_id=1, pose_rank=1, cf=-42.5)
+        pose2 = PoseResult(path=Path("b.pdb"), mode_id=2, pose_rank=1, cf=-35.0)
+        mode1 = BindingModeResult(
+            mode_id=1, rank=1, poses=[pose1],
+            free_energy=-41.0, enthalpy=-40.0, entropy=0.0033,
+            best_cf=-42.5, temperature=300.0,
+        )
+        mode2 = BindingModeResult(
+            mode_id=2, rank=2, poses=[pose2],
+            free_energy=-34.0, best_cf=-35.0, temperature=300.0,
+        )
+        return DockingResult(
+            source_dir=Path("/data/output"),
+            binding_modes=[mode1, mode2],
+            temperature=300.0,
+        )
+
+    def test_round_trip_via_file(self, tmp_path):
+        original = self._make_result()
+        csv_path = tmp_path / "results.csv"
+        original.to_csv(csv_path)
+
+        restored = DockingResult.from_csv(csv_path)
+        assert restored.n_modes == 2
+        assert restored.binding_modes[0].mode_id == 1
+        assert restored.binding_modes[0].free_energy == pytest.approx(-41.0)
+        assert restored.binding_modes[0].best_cf == pytest.approx(-42.5)
+        assert restored.binding_modes[1].mode_id == 2
+
+    def test_round_trip_via_string(self):
+        original = self._make_result()
+        csv_text = original.to_csv()
+
+        restored = DockingResult.from_csv(csv_text)
+        assert restored.n_modes == 2
+        assert restored.binding_modes[0].free_energy == pytest.approx(-41.0)
+
+    def test_none_values_preserved(self):
+        mode = BindingModeResult(mode_id=1, rank=1, poses=[], free_energy=-5.0)
+        original = DockingResult(source_dir=Path("."), binding_modes=[mode])
+        csv_text = original.to_csv()
+
+        restored = DockingResult.from_csv(csv_text)
+        assert restored.binding_modes[0].free_energy == pytest.approx(-5.0)
+        assert restored.binding_modes[0].enthalpy is None
+        assert restored.binding_modes[0].entropy is None
+
+    def test_int_fields_coerced(self):
+        original = self._make_result()
+        csv_text = original.to_csv()
+
+        restored = DockingResult.from_csv(csv_text)
+        assert isinstance(restored.binding_modes[0].mode_id, int)
+        assert isinstance(restored.binding_modes[0].rank, int)
+
+    def test_float_fields_coerced(self):
+        original = self._make_result()
+        csv_text = original.to_csv()
+
+        restored = DockingResult.from_csv(csv_text)
+        assert isinstance(restored.binding_modes[0].free_energy, float)
+        assert isinstance(restored.binding_modes[0].best_cf, float)
+
+    def test_empty_csv_yields_no_modes(self):
+        mode = BindingModeResult(mode_id=1, rank=1, poses=[])
+        original = DockingResult(source_dir=Path("."), binding_modes=[])
+        csv_text = original.to_csv()
+
+        restored = DockingResult.from_csv(csv_text)
+        assert restored.n_modes == 0

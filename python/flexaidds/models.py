@@ -431,3 +431,76 @@ class DockingResult:
             writer.writeheader()
             writer.writerows(records)
         return None
+
+    @classmethod
+    def from_csv(cls, source: Union[str, Path]) -> "DockingResult":
+        """Load a DockingResult from a CSV file or string.
+
+        Accepts either a file path or raw CSV text.  The CSV format is the
+        one produced by :meth:`to_csv` (flat binding-mode records).
+
+        Numeric fields are coerced from their string representation; empty
+        strings and the literal ``"None"`` are treated as ``None``.
+
+        Args:
+            source: Path to a ``.csv`` file, or a CSV-encoded string.
+
+        Returns:
+            A new :class:`DockingResult` instance.
+        """
+        path = Path(source) if not isinstance(source, Path) else source
+        if path.exists():
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        else:
+            text = str(source)
+
+        reader = csv.DictReader(io.StringIO(text))
+        records = []
+        for row in reader:
+            coerced: Dict[str, Any] = {}
+            for key, value in row.items():
+                coerced[key] = cls._coerce_csv_value(key, value)
+            records.append(coerced)
+
+        modes: List[BindingModeResult] = []
+        for i, rec in enumerate(records):
+            modes.append(BindingModeResult(
+                mode_id=rec.get("mode_id", i),
+                rank=rec.get("rank", i + 1),
+                poses=[],
+                free_energy=rec.get("free_energy"),
+                enthalpy=rec.get("enthalpy"),
+                entropy=rec.get("entropy"),
+                heat_capacity=rec.get("heat_capacity"),
+                std_energy=rec.get("std_energy"),
+                best_cf=rec.get("best_cf"),
+                temperature=rec.get("temperature"),
+            ))
+
+        return cls(
+            source_dir=Path("."),
+            binding_modes=modes,
+        )
+
+    @staticmethod
+    def _coerce_csv_value(key: str, value: str) -> Any:
+        """Coerce a CSV string value to the appropriate Python type."""
+        if value is None or value == "" or value == "None":
+            return None
+        _int_keys = {"mode_id", "rank", "n_poses"}
+        if key in _int_keys:
+            try:
+                return int(float(value))
+            except (ValueError, TypeError):
+                return value
+        _float_keys = {
+            "free_energy", "enthalpy", "entropy", "heat_capacity",
+            "std_energy", "best_cf", "temperature",
+        }
+        if key in _float_keys:
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return value
+        return value
