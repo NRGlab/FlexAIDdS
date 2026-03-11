@@ -31,6 +31,7 @@
 python/**/__pycache__
 python/__pycache__
 python/**/*.egg-info
+python/**/*.egg-info/**
 python/**/*.so
 # dependencies files
 !*.def
