@@ -272,10 +272,11 @@ class TestENCoMPythonFallback:
         assert hasattr(fds, "NormalMode")
         assert hasattr(fds, "VibrationalEntropy")
 
-    def test_encom_symbols_none_when_no_core(self):
+    def test_encom_symbols_fallback_when_no_core(self):
         if _CORE_AVAILABLE:
-            pytest.skip("C++ core is built; checking None path not applicable")
+            pytest.skip("C++ core is built; checking fallback path not applicable")
         import flexaidds as fds
-        assert fds.ENCoMEngine is None
-        assert fds.NormalMode is None
-        assert fds.VibrationalEntropy is None
+        from flexaidds.encom import ENCoMEngine, NormalMode, VibrationalEntropy
+        assert fds.ENCoMEngine is ENCoMEngine
+        assert fds.NormalMode is NormalMode
+        assert fds.VibrationalEntropy is VibrationalEntropy
