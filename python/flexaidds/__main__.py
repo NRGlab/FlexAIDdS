@@ -30,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Inspect FlexAID∆S docking result directories from Python.",
     )
     parser.add_argument(
-        "--version",
+        "-V", "--version",
         action="version",
         version=f"%(prog)s {__version__}",
     )
