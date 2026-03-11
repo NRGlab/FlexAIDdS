@@ -215,6 +215,27 @@ See [Configuration Reference](#configuration-reference) for all legacy parameter
 tENCoM reference.pdb target1.pdb [target2.pdb ...] [-T temp] [-r cutoff] [-k k0] [-o prefix]
 ```
 
+### Co-Translational / Co-Transcriptional Docking (NATURaL)
+
+NATURaL mode activates **automatically** when the system involves nucleotide ligands or nucleic acid receptors — no special flags needed. Simply dock as usual:
+
+```bash
+# Auto-detected: nucleotide ligand triggers co-translational mode
+./FlexAIDdS ribosome.pdb atp_analog.mol2
+
+# RNA polymerase + nascent RNA — activates co-transcriptional mode
+./FlexAIDdS rnap_complex.pdb rna_fragment.mol2
+```
+
+When active, the engine:
+1. **Grows the receptor chain** residue-by-residue at codon-dependent ribosome speed (Zhao 2011 master equation) or nucleotide-by-nucleotide at RNA polymerase speed
+2. **Identifies pause sites** where elongation rate drops below 30% of mean — these are co-translational folding windows
+3. **Computes incremental CF + Shannon entropy** at each growth step
+4. **Models TM helix insertion** via the Sec61 translocon (Hessa 2007) when transmembrane segments are detected
+5. Reports final co-translational ΔG, number of pause sites, and TM insertion events
+
+Supported organisms: *E. coli* K-12 and Human HEK293 (codon-specific tRNA abundance tables).
+
 ### Python API (Phase 2 — in progress)
 
 ```python
@@ -326,16 +347,23 @@ Tests marked with `@requires_core` need the compiled C++ `_core` extension and s
 
 ## Scientific Background
 
-### NATURaL Scoring Function
+### Scoring: Contact Function (CF) vs NATURaL 2-Term Potential
+
+FlexAID∆S uses two complementary scoring layers:
+
+**Primary: Voronoi Contact Function (CF)** — geometry-based shape complementarity via Voronoi tessellation of atom-atom contact surfaces (or 610-point sphere approximation in SPH mode). This is the main docking score reported in results. See [Scoring Functions: VCT vs SPH](#scoring-functions-vct-vs-sph).
+
+**Underlying: NATURaL interaction matrix** — a 2-term LJ+Coulomb potential parameterised over 40 SYBYL atom types (compressed from 84) that provides the per-contact energy weights used by the CF:
 
 ```
 E = Σ [ε_ij·(r_ij⁻¹² − 2r_ij⁻⁶)] + Σ [(q_i·q_j)/(4πε₀·ε_r·r_ij)]
     └── Lennard-Jones 12-6 ──┘     └──── Coulomb ────┘
 
-• 40 SYBYL atom types (compressed from 84)
 • Distance-dependent dielectric: ε_r = 4r
 • Validation: r = 0.78–0.82 on CASF-2016
 ```
+
+The CF computes *how much* surface area two atoms share; the NATURaL matrix determines *how favourable* that contact is. Together they produce the complementarity score that the GA optimises and the StatMechEngine converts into free energy.
 
 ### Statistical Mechanics Framework
 
@@ -554,7 +582,7 @@ The `--rigid` flag overrides flexibility to all-off and temperature to 0.
 
 ### Torsional ENCoM (TENCM)
 
-Implements the torsional elastic network contact model (Delarue & Sanejouand 2002; Yang, Song & Cui 2009) for protein backbone flexibility. Builds a spring network over C-alpha contacts within a cutoff radius, computes torsional normal modes via Jacobi diagonalisation, and samples Boltzmann-weighted backbone perturbations during the GA without rebuilding the rotamer library every generation.
+Implements the torsional variant of the **Elastic Network Contact Model** (ENCoM; Frappier et al. 2015) for protein backbone flexibility, using torsional degrees of freedom from the ENM formalism of Delarue & Sanejouand (2002) and Yang, Song & Cui (2009). Builds a spring network over C-alpha contacts within a cutoff radius, computes torsional normal modes via Jacobi diagonalisation, and samples Boltzmann-weighted backbone perturbations during the GA without rebuilding the rotamer library every generation.
 
 Supports both protein (C-alpha) and nucleic acid (C4' backbone) chains for RNA/DNA flexibility.
 
@@ -669,7 +697,10 @@ Provides Python ports of StatMechEngine, ShannonThermoStack, TorsionalENM, and C
 2. **NRGsuite PyMOL plugin**:
    > Gaudreault, Morency & Najmanovich (2015). *Bioinformatics* 31(23):3856-8. [DOI:10.1093/bioinformatics/btv458](https://doi.org/10.1093/bioinformatics/btv458)
 
-3. **FlexAID∆S: Entropy-driven molecular docking** (preprint pending):
+3. **ENCoM** (Elastic Network Contact Model):
+   > Frappier et al. (2015). *Proteins* 83(11):2073-82. [DOI:10.1002/prot.24922](https://doi.org/10.1002/prot.24922)
+
+4. **FlexAID∆S: Entropy-driven molecular docking** (preprint pending):
    > Morency LP & Najmanovich RJ (2026). "FlexAID∆S: Information-Theoretic Entropy Improves Molecular Docking Accuracy and Binding Mode Prediction." Preprint in preparation.
 
    *Status*: Manuscript in preparation. Preprint expected on bioRxiv/ChemRxiv in 2026. This paper introduces the statistical mechanics framework, Shannon entropy scoring, and benchmark results on ITC-187 and CASF-2016.
