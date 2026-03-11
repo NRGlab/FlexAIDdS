@@ -252,6 +252,8 @@ target_sources(FlexAID PRIVATE
         LIB/statmech.cpp
         LIB/encom.cpp             # ← NEW: ENCoM vibrational entropy
         # ── v1.5 thermodynamic + hardware acceleration modules ──
+        LIB/hardware_detect.cpp
+        LIB/hardware_dispatch.cpp
         LIB/ShannonThermoStack/ShannonThermoStack.cpp
         LIB/LigandRingFlex/RingConformerLibrary.cpp
         LIB/LigandRingFlex/SugarPucker.cpp
@@ -265,7 +267,9 @@ target_sources(FlexAID PRIVATE
         LIB/Mol2Reader.cpp
         # ── CavityDetect: native SURFNET cavity detection ──
         LIB/CavityDetect/CavityDetect.cpp
-        # ── JSON config parser ──
+        # ── PTMAttachment: PTM/glycan modification on target chain ──
+        LIB/PTMAttachment/PTMAttachment.cpp
+        # ── JSON config parser (zero external dependencies) ──
         LIB/config_parser.cpp
 )
 
@@ -276,6 +280,7 @@ target_include_directories(FlexAID PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
     ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ChiralCenter
     ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
+    ${CMAKE_CURRENT_SOURCE_DIR}/LIB/PTMAttachment
 )
 
 # ─── compiler flags ────────────────────────────────────────────────────
@@ -313,6 +318,7 @@ if(FLEXAIDS_USE_CUDA)
     target_sources(FlexAID PRIVATE
         LIB/cuda_eval.cu                          # existing CF batch kernel
         LIB/ShannonThermoStack/shannon_cuda.cu    # Shannon entropy histogram kernel
+        LIB/tencm_cuda.cu                         # TENCoM contact discovery + Hessian assembly
     )
     target_compile_definitions(FlexAID PRIVATE FLEXAIDS_USE_CUDA)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
@@ -322,7 +328,7 @@ if(FLEXAIDS_USE_CUDA)
         CUDA_SEPARABLE_COMPILATION ON
         CUDA_STANDARD 17)
     target_link_libraries(FlexAID PRIVATE CUDA::cudart CUDA::cudadevrt)
-    message(STATUS "CUDA enabled — CF batch kernel + Shannon histogram kernel")
+    message(STATUS "CUDA enabled — CF batch + Shannon histogram + TENCoM Hessian kernels")
 endif()
 
 # ─── Metal sources ──────────────────────────────────────────────────────
@@ -343,6 +349,13 @@ if(FLEXAIDS_USE_METAL)
     target_sources(FlexAID PRIVATE LIB/ShannonThermoStack/ShannonMetalBridge.mm)
     target_compile_definitions(FlexAID PRIVATE FLEXAIDS_HAS_METAL_SHANNON)
     set_source_files_properties(LIB/ShannonThermoStack/ShannonMetalBridge.mm PROPERTIES
+        LANGUAGE OBJCXX
+        COMPILE_FLAGS "-std=c++20 -fno-objc-arc"
+    )
+    # TENCoM Metal bridge (GPU contact discovery + Hessian assembly)
+    target_sources(FlexAID PRIVATE LIB/tencm_metal.mm)
+    target_compile_definitions(FlexAID PRIVATE FLEXAIDS_HAS_METAL_TENCM)
+    set_source_files_properties(LIB/tencm_metal.mm PROPERTIES
         LANGUAGE OBJCXX
         COMPILE_FLAGS "-std=c++20 -fno-objc-arc"
     )
@@ -382,6 +395,8 @@ if(BUILD_PYTHON_BINDINGS AND pybind11_FOUND)
     pybind11_add_module(_core
         python/bindings/core_bindings.cpp
         LIB/statmech.cpp
+        LIB/hardware_dispatch.cpp
+        LIB/hardware_detect.cpp
         LIB/encom.cpp
         # BindingMode requires full GA infrastructure
         # Partial exposure for now (thermodynamics only)
@@ -408,6 +423,8 @@ if(ENABLE_TENCOM_BENCHMARK)
         LIB/benchmark_tencom.cpp
         LIB/tencm.cpp
         LIB/statmech.cpp
+        LIB/hardware_dispatch.cpp
+        LIB/hardware_detect.cpp
         LIB/encom.cpp
     )
     target_include_directories(benchmark_tencom PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
@@ -438,6 +455,8 @@ if(ENABLE_TENCOM_TOOL)
         LIB/pdb_calpha.cpp
         LIB/tencm.cpp
         LIB/statmech.cpp
+        LIB/hardware_dispatch.cpp
+        LIB/hardware_detect.cpp
         LIB/encom.cpp
     )
     target_include_directories(tENCoM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
@@ -457,7 +476,26 @@ if(ENABLE_TENCOM_TOOL)
         target_link_libraries(tENCoM PRIVATE Eigen3::Eigen)
         target_compile_definitions(tENCoM PRIVATE FLEXAIDS_HAS_EIGEN)
     endif()
-    message(STATUS "tENCoM ultra-fast tool enabled — build target: tENCoM")
+    # CUDA GPU acceleration for large proteins (N > 256 residues)
+    if(FLEXAIDS_USE_CUDA)
+        target_sources(tENCoM PRIVATE LIB/tencm_cuda.cu)
+        target_compile_definitions(tENCoM PRIVATE FLEXAIDS_USE_CUDA)
+        set_target_properties(tENCoM PROPERTIES
+            CUDA_SEPARABLE_COMPILATION ON
+            CUDA_STANDARD 17)
+        target_link_libraries(tENCoM PRIVATE CUDA::cudart CUDA::cudadevrt)
+    endif()
+    # Metal GPU acceleration (macOS)
+    if(FLEXAIDS_USE_METAL)
+        target_sources(tENCoM PRIVATE LIB/tencm_metal.mm)
+        target_compile_definitions(tENCoM PRIVATE FLEXAIDS_HAS_METAL_TENCM)
+        set_source_files_properties(LIB/tencm_metal.mm PROPERTIES
+            LANGUAGE OBJCXX
+            COMPILE_FLAGS "-std=c++20 -fno-objc-arc")
+        target_link_libraries(tENCoM PRIVATE
+            ${METAL_LIBRARY} ${FOUNDATION_LIBRARY} ${METALKIT_LIBRARY})
+    endif()
+    message(STATUS "tENCoM tool enabled — build target: tENCoM")
 endif()
 
 # ─── VoronoiCFBatch benchmark (Task 2.3) ───────────────────────────────────────
@@ -557,7 +595,8 @@ if(BUILD_TESTING)
     enable_testing()
 
     # test_statmech — StatMechEngine unit tests
-    add_executable(test_statmech tests/test_statmech.cpp LIB/statmech.cpp)
+    add_executable(test_statmech tests/test_statmech.cpp LIB/statmech.cpp
+                   LIB/hardware_dispatch.cpp LIB/hardware_detect.cpp)
     target_include_directories(test_statmech PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
     target_link_libraries(test_statmech PRIVATE GTest::gtest GTest::gtest_main)
     if(MSVC)
@@ -565,13 +604,37 @@ if(BUILD_TESTING)
     else()
         target_compile_options(test_statmech PRIVATE -O2)
     endif()
+    flexaids_configure_simd(test_statmech)
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_statmech PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+        target_link_libraries(test_statmech PRIVATE Eigen3::Eigen)
+        target_compile_definitions(test_statmech PRIVATE FLEXAIDS_HAS_EIGEN)
+    elseif(FLEXAIDS_USE_EIGEN AND EIGEN3_FOUND)
+        target_include_directories(test_statmech PRIVATE ${EIGEN3_INCLUDE_DIRS})
+        target_compile_definitions(test_statmech PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
     add_test(NAME StatMechTests COMMAND test_statmech)
+
+    # test_json_config — JSON parser & config defaults tests (zero dependencies)
+    add_executable(test_json_config tests/test_json_config.cpp)
+    target_include_directories(test_json_config PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_link_libraries(test_json_config PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_json_config PRIVATE /O2)
+    else()
+        target_compile_options(test_json_config PRIVATE -O2)
+    endif()
+    add_test(NAME JsonConfigTests COMMAND test_json_config)
 
     # test_hardware_dispatch — ShannonThermoStack dispatch layer tests
     add_executable(test_hardware_dispatch
         tests/test_hardware_dispatch.cpp
         LIB/ShannonThermoStack/ShannonThermoStack.cpp
         LIB/statmech.cpp
+        LIB/hardware_dispatch.cpp
+        LIB/hardware_detect.cpp
         LIB/tencm.cpp)
     target_include_directories(test_hardware_dispatch PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB
@@ -586,6 +649,40 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME HardwareDispatchTests COMMAND test_hardware_dispatch)
 
+    # test_hardware_detect_dispatch — unified dispatch layer + hardware detection tests
+    add_executable(test_hardware_detect_dispatch
+        tests/test_hardware_detect_dispatch.cpp
+        LIB/hardware_detect.cpp
+        LIB/hardware_dispatch.cpp
+        LIB/statmech.cpp)
+    target_include_directories(test_hardware_detect_dispatch PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_link_libraries(test_hardware_detect_dispatch PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_hardware_detect_dispatch PRIVATE /O2)
+    else()
+        target_compile_options(test_hardware_detect_dispatch PRIVATE -O2)
+    endif()
+    flexaids_configure_simd(test_hardware_detect_dispatch)
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_hardware_detect_dispatch PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+        target_link_libraries(test_hardware_detect_dispatch PRIVATE Eigen3::Eigen)
+        target_compile_definitions(test_hardware_detect_dispatch PRIVATE FLEXAIDS_HAS_EIGEN)
+    elseif(FLEXAIDS_USE_EIGEN AND EIGEN3_FOUND)
+        target_include_directories(test_hardware_detect_dispatch PRIVATE ${EIGEN3_INCLUDE_DIRS})
+        target_compile_definitions(test_hardware_detect_dispatch PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
+    if(FLEXAIDS_USE_CUDA)
+        target_compile_definitions(test_hardware_detect_dispatch PRIVATE FLEXAIDS_USE_CUDA)
+        target_link_libraries(test_hardware_detect_dispatch PRIVATE CUDA::cudart)
+    endif()
+    if(FLEXAIDS_USE_METAL)
+        target_compile_definitions(test_hardware_detect_dispatch PRIVATE FLEXAIDS_USE_METAL)
+    endif()
+    add_test(NAME HardwareDetectDispatchTests COMMAND test_hardware_detect_dispatch)
+
     # test_tencom_diff — tENCoM differential engine tests
     add_executable(test_tencom_diff
         tests/test_tencom_diff.cpp
@@ -593,6 +690,8 @@ if(BUILD_TESTING)
         LIB/pdb_calpha.cpp
         LIB/tencm.cpp
         LIB/statmech.cpp
+        LIB/hardware_dispatch.cpp
+        LIB/hardware_detect.cpp
         LIB/encom.cpp
     )
     target_include_directories(test_tencom_diff PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
@@ -602,6 +701,7 @@ if(BUILD_TESTING)
     else()
         target_compile_options(test_tencom_diff PRIVATE -O2)
     endif()
+    flexaids_configure_simd(test_tencom_diff)
     if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
         target_link_libraries(test_tencom_diff PRIVATE OpenMP::OpenMP_CXX)
     endif()
@@ -610,6 +710,102 @@ if(BUILD_TESTING)
         target_compile_definitions(test_tencom_diff PRIVATE FLEXAIDS_HAS_EIGEN)
     endif()
     add_test(NAME TENCoMDiffTests COMMAND test_tencom_diff)
+
+    # test_ptm_attachment — PTMAttachment module tests
+    add_executable(test_ptm_attachment
+        tests/test_ptm_attachment.cpp
+        LIB/PTMAttachment/PTMAttachment.cpp
+    )
+    target_include_directories(test_ptm_attachment PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/PTMAttachment
+    )
+    target_link_libraries(test_ptm_attachment PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_ptm_attachment PRIVATE /O2)
+    else()
+        target_compile_options(test_ptm_attachment PRIVATE -O2)
+    endif()
+    add_test(NAME PTMAttachmentTests COMMAND test_ptm_attachment)
+
+    # test_gaboom — Genetic Algorithm engine unit tests
+    add_executable(test_gaboom
+        tests/test_gaboom.cpp
+        tests/stubs.cpp
+        LIB/gaboom.cpp
+        LIB/Vcontacts.cpp
+        LIB/statmech.cpp
+        LIB/geometry.cpp
+        LIB/tencm.cpp
+        LIB/encom.cpp
+        LIB/BindingMode.cpp
+        LIB/ShannonThermoStack/ShannonThermoStack.cpp
+        LIB/CleftDetector.cpp
+        LIB/NATURaL/NATURaLDualAssembly.cpp
+        LIB/NATURaL/RibosomeElongation.cpp
+        LIB/NATURaL/TransloconInsertion.cpp
+    )
+    target_include_directories(test_gaboom PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
+    )
+    target_link_libraries(test_gaboom PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_gaboom PRIVATE /O2)
+    else()
+        target_compile_options(test_gaboom PRIVATE -O2)
+    endif()
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_gaboom PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+        target_link_libraries(test_gaboom PRIVATE Eigen3::Eigen)
+        target_compile_definitions(test_gaboom PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
+    add_test(NAME GABoomTests COMMAND test_gaboom)
+
+    # test_vcontacts — Voronoi contact scoring math unit tests
+    add_executable(test_vcontacts
+        tests/test_vcontacts.cpp
+        tests/stubs.cpp
+        LIB/Vcontacts.cpp
+        LIB/geometry.cpp
+    )
+    target_include_directories(test_vcontacts PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_link_libraries(test_vcontacts PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_vcontacts PRIVATE /O2)
+    else()
+        target_compile_options(test_vcontacts PRIVATE -O2)
+    endif()
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_vcontacts PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    add_test(NAME VcontactsTests COMMAND test_vcontacts)
+
+    # test_cleft_cavity — CleftDetector + CavityDetect unit tests
+    add_executable(test_cleft_cavity
+        tests/test_cleft_cavity.cpp
+        LIB/CleftDetector.cpp
+        LIB/CavityDetect/CavityDetect.cpp
+        LIB/geometry.cpp
+    )
+    target_include_directories(test_cleft_cavity PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
+    )
+    target_link_libraries(test_cleft_cavity PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_cleft_cavity PRIVATE /O2)
+    else()
+        target_compile_options(test_cleft_cavity PRIVATE -O2)
+    endif()
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_cleft_cavity PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    add_test(NAME CleftCavityTests COMMAND test_cleft_cavity)
 
     # test_encom — ENCoM vibrational entropy engine tests
     add_executable(test_encom
@@ -704,109 +900,7 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME CavityDetectTests COMMAND test_cavity_detect)
 
-    # ── flexaid_testlib: static library for tests needing BindingMode/gaboom ──
-    # Avoids duplicating 50+ source files across multiple test targets.
-    set(FLEXAID_TESTLIB_SOURCES
-        LIB/gaboom.cpp
-        LIB/BindingMode.cpp
-        LIB/statmech.cpp
-        LIB/encom.cpp
-        LIB/tencm.cpp
-        LIB/Vcontacts.cpp
-        LIB/ic2cf.cpp
-        LIB/vcfunction.cpp
-        LIB/geometry.cpp
-        LIB/cluster.cpp
-        LIB/DensityPeak_Cluster.cpp
-        LIB/FastOPTICS_cluster.cpp
-        LIB/FOPTICS.cpp
-        LIB/calc_rmsd.cpp
-        LIB/calc_rmsd_chrom.cpp
-        LIB/calc_center.cpp
-        LIB/write_sphere.cpp
-        LIB/write_grid.cpp
-        LIB/write_rrg.cpp
-        LIB/write_rrd.cpp
-        LIB/write_pdb.cpp
-        LIB/print_surfmat.cpp
-        LIB/fileio.cpp
-        LIB/read_coor.cpp
-        LIB/create_rebuild_list.cpp
-        LIB/buildic.cpp
-        LIB/buildcc.cpp
-        LIB/buildic_point.cpp
-        LIB/buildcc_point.cpp
-        LIB/buildlist.cpp
-        LIB/bondedlist.cpp
-        LIB/assign_shift.cpp
-        LIB/ic_bounds.cpp
-        LIB/modify_pdb.cpp
-        LIB/shortest_path.cpp
-        LIB/assign_shortflex.cpp
-        LIB/update_constraint.cpp
-        LIB/update_optres.cpp
-        LIB/update_bonded.cpp
-        LIB/maps.cpp
-        LIB/read_rotlib.cpp
-        LIB/number_of_dihedrals.cpp
-        LIB/build_rotamers.cpp
-        LIB/check_clash.cpp
-        LIB/dee_pivot.cpp
-        LIB/alter_mode.cpp
-        LIB/rna_structure.cpp
-        LIB/slice_grid.cpp
-        LIB/partition_grid.cpp
-        LIB/generate_grid.cpp
-        LIB/calc_cleftic.cpp
-        LIB/ShannonThermoStack/ShannonThermoStack.cpp
-        LIB/LigandRingFlex/RingConformerLibrary.cpp
-        LIB/LigandRingFlex/SugarPucker.cpp
-        LIB/LigandRingFlex/LigandRingFlex.cpp
-        LIB/NATURaL/NATURaLDualAssembly.cpp
-        LIB/NATURaL/RibosomeElongation.cpp
-        LIB/NATURaL/TransloconInsertion.cpp
-        LIB/ChiralCenter/ChiralCenterGene.cpp
-        LIB/CavityDetect/CavityDetect.cpp
-    )
-    add_library(flexaid_testlib STATIC ${FLEXAID_TESTLIB_SOURCES})
-    target_include_directories(flexaid_testlib PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
-        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
-        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/LigandRingFlex
-        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
-        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ChiralCenter
-        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
-    )
-    if(MSVC)
-        target_compile_options(flexaid_testlib PRIVATE /O2)
-    else()
-        target_compile_options(flexaid_testlib PRIVATE -O2 -ffast-math)
-    endif()
-    flexaids_configure_simd(flexaid_testlib)
-    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
-        target_link_libraries(flexaid_testlib PUBLIC Eigen3::Eigen)
-        target_compile_definitions(flexaid_testlib PUBLIC FLEXAIDS_HAS_EIGEN)
-    endif()
-    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
-        target_link_libraries(flexaid_testlib PUBLIC OpenMP::OpenMP_CXX)
-    endif()
-
-    # test_binding_mode_statmech — BindingMode ↔ StatMechEngine integration tests
-    add_executable(test_binding_mode_statmech tests/test_binding_mode_statmech.cpp)
-    target_link_libraries(test_binding_mode_statmech PRIVATE flexaid_testlib GTest::gtest GTest::gtest_main)
-    add_test(NAME BindingModeStatMechTests COMMAND test_binding_mode_statmech)
-
-    # test_binding_mode_advanced — BindingMode advanced methods (delta_G, WHAM, representative)
-    add_executable(test_binding_mode_advanced tests/test_binding_mode_advanced.cpp)
-    target_link_libraries(test_binding_mode_advanced PRIVATE flexaid_testlib GTest::gtest GTest::gtest_main)
-    add_test(NAME BindingModeAdvancedTests COMMAND test_binding_mode_advanced)
-
-    # test_ga_core — GA primitive operations (QuickSort, mutate, crossover, copy)
-    add_executable(test_ga_core tests/test_ga_core.cpp)
-    target_link_libraries(test_ga_core PRIVATE flexaid_testlib GTest::gtest GTest::gtest_main)
-    add_test(NAME GACoreTests COMMAND test_ga_core)
-
-    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_tencom_diff, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect, test_binding_mode_statmech, test_binding_mode_advanced, test_ga_core")
+    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_hardware_detect_dispatch, test_tencom_diff, test_ptm_attachment, test_gaboom, test_vcontacts, test_cleft_cavity, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect")
 endif()
 
 # ─── Swift Bridge (macOS only) ────────────────────────────────────────────

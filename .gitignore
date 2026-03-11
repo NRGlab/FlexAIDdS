@@ -20,6 +20,9 @@
 !*.ts
 !*.tsx
 !*.metal
+# data files (PTM/glycan libraries, charge parameters)
+!data
+!data/**
 # test suite
 !tests
 !tests/**
@@ -49,6 +52,7 @@ typescript/**/dist
 python/**/__pycache__
 python/__pycache__
 python/**/*.egg-info
+python/**/*.egg-info/**
 python/**/*.so
 # dependencies files
 !*.def

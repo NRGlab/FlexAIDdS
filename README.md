@@ -239,8 +239,7 @@ hardware:
 
 > **Not yet implemented.** Live docking orchestration from Python is staged behind ongoing C++ integration.
 
-```python
-# Planned Python docking interface
+# High-level docking
 results = flexaidds.dock(
     receptor='receptor.pdb',
     ligand='ligand.mol2',

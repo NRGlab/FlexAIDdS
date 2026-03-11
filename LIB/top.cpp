@@ -206,7 +206,6 @@ int main(int argc, char **argv){
 	printf("base path is '%s'\n", FA->base_path);
 
 	// ── CLI argument parsing ──────────────────────────────────────────────
-	// Detect mode: legacy (3 positional args) or new (receptor + ligand + flags)
 	bool legacy_mode = false;
 	bool use_rigid = false;
 	std::string config_path;
@@ -267,9 +266,9 @@ int main(int argc, char **argv){
 		}
 
 		// Load JSON config: defaults → user overrides → rigid overrides
-		nlohmann::json config = load_config(config_path);
+		json::Value config = load_config(config_path);
 		if (use_rigid) {
-			config = merge_json(config, rigid_overrides());
+			config = json::merge(config, flexaid_rigid_overrides());
 		}
 
 		// Apply config to FA/GB structs
@@ -281,15 +280,9 @@ int main(int argc, char **argv){
 			FA->intramolecular ? "ON" : "OFF",
 			FA->complf);
 
-		// In new mode, we still need read_input() to process the PDB/ligand.
-		// Generate a temporary .inp file content in memory that read_input expects,
-		// or set dockinp/gainp to empty and handle the receptor/ligand directly.
 		// For now, the new mode sets the config values but still requires
 		// the legacy input files to be generated or provided.
 		// TODO: Phase 2 — direct PDB/MOL2 loading without .inp files.
-
-		// For now, print the loaded config and exit with a message
-		// directing the user to use --legacy until Phase 2 is complete.
 		fprintf(stderr, "NOTE: Direct receptor/ligand mode is prepared (config applied).\n");
 		fprintf(stderr, "Input pipeline integration in progress. Use --legacy for full runs.\n");
 		fprintf(stderr, "Config loaded: %s\n", config_path.empty() ? "(defaults)" : config_path.c_str());
@@ -299,7 +292,6 @@ int main(int argc, char **argv){
 		end_strfile[MAX_PATH__ - 1] = '\0';
 		strcpy(FA->rrgfile, end_strfile);
 
-		// Set dockinp/gainp to empty — read_input will still be called in legacy path
 		dockinp[0] = '\0';
 		gainp[0] = '\0';
 
