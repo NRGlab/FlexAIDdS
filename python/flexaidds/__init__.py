@@ -1,6 +1,8 @@
 """flexaidds: Python bindings and read-only analysis helpers for FlexAID∆S."""
 
-# C++ extension — optional: pure-Python helpers work without it
+from .models import BindingModeResult, DockingResult, PoseResult
+from .results import load_results
+
 try:
     from ._core import (
         BoltzmannLUT,
@@ -18,7 +20,6 @@ try:
     )
     HAS_CORE_BINDINGS = True
 except ImportError:
-    # Fallback when C++ extension is not built
     BoltzmannLUT = None
     ENCoMEngine = None
     NormalMode = None
@@ -29,7 +30,7 @@ except ImportError:
     TIPoint = None
     VibrationalEntropy = None
     WHAMBin = None
-    kB_kcal = 0.001987206
+    kB_kcal = 0.0019872041
     kB_SI = 1.380649e-23
     HAS_CORE_BINDINGS = False
 
