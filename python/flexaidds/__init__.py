@@ -8,8 +8,6 @@ try:
         NormalMode,
         Replica,
         State,
-        StatMechEngine,
-        Thermodynamics,
         TIPoint,
         VibrationalEntropy,
         WHAMBin,
@@ -24,15 +22,14 @@ except ImportError:
     NormalMode = None
     Replica = None
     State = None
-    StatMechEngine = None
-    Thermodynamics = None
     TIPoint = None
     VibrationalEntropy = None
     WHAMBin = None
-    kB_kcal = 0.001987206
-    kB_SI = 1.380649e-23
+    kB_kcal = 0.001987206   # kcal mol⁻¹ K⁻¹
+    kB_SI = 1.380649e-23    # J K⁻¹
     HAS_CORE_BINDINGS = False
 
+from .thermodynamics import StatMechEngine, Thermodynamics
 from .models import BindingModeResult, DockingResult, PoseResult
 from .results import load_results
 
@@ -42,6 +39,9 @@ __all__ = [
     "BindingModeResult",
     "DockingResult",
     "load_results",
+    # StatMech (pure Python, always available)
+    "StatMechEngine",
+    "Thermodynamics",
     # Physical constants (always available)
     "kB_kcal",
     "kB_SI",
@@ -52,8 +52,6 @@ __all__ = [
 # C++ core modules (only available when compiled)
 if HAS_CORE_BINDINGS:
     __all__.extend([
-        "StatMechEngine",
-        "Thermodynamics",
         "State",
         "BoltzmannLUT",
         "Replica",

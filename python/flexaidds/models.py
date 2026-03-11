@@ -62,6 +62,14 @@ class PoseResult:
     temperature: Optional[float] = None
     remarks: Dict[str, Any] = field(default_factory=dict)
 
+    def __repr__(self) -> str:
+        score = self.cf if self.cf is not None else self.cf_app
+        parts = [f"mode={self.mode_id}", f"rank={self.pose_rank}"]
+        if score is not None:
+            parts.append(f"cf={score:.2f}")
+        parts.append(f"path={self.path.name!r}")
+        return f"<PoseResult {' '.join(parts)}>"
+
 
 @dataclass(frozen=True)
 class BindingModeResult:
@@ -103,10 +111,28 @@ class BindingModeResult:
     temperature: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    def __repr__(self) -> str:
+        parts = [f"BindingModeResult(id={self.mode_id}, rank={self.rank}"]
+        parts.append(f", n_poses={len(self.poses)}")
+        if self.free_energy is not None:
+            parts.append(f", F={self.free_energy:.3f}")
+        if self.best_cf is not None:
+            parts.append(f", best_cf={self.best_cf:.3f}")
+        parts.append(")")
+        return "".join(parts)
+
     @property
     def n_poses(self) -> int:
         """Number of poses in this binding mode."""
         return len(self.poses)
+
+    def __repr__(self) -> str:
+        parts = [f"mode_id={self.mode_id}", f"n_poses={self.n_poses}"]
+        if self.free_energy is not None:
+            parts.append(f"F={self.free_energy:.2f}")
+        if self.best_cf is not None:
+            parts.append(f"best_cf={self.best_cf:.2f}")
+        return f"<BindingModeResult {' '.join(parts)}>"
 
     def best_pose(self) -> Optional[PoseResult]:
         """Return the pose with the lowest CF (or cf_app) score.
@@ -153,10 +179,24 @@ class DockingResult:
     temperature: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    def __repr__(self) -> str:
+        parts = [f"DockingResult(n_modes={len(self.binding_modes)}"]
+        if self.temperature is not None:
+            parts.append(f", T={self.temperature:.1f}K")
+        parts.append(f", source='{self.source_dir.name}')")
+        return "".join(parts)
+
     @property
     def n_modes(self) -> int:
         """Number of binding modes in this result."""
         return len(self.binding_modes)
+
+    def __repr__(self) -> str:
+        parts = [f"n_modes={self.n_modes}"]
+        if self.temperature is not None:
+            parts.append(f"T={self.temperature:.0f}K")
+        parts.append(f"source={self.source_dir.name!r}")
+        return f"<DockingResult {' '.join(parts)}>"
 
     def top_mode(self) -> Optional[BindingModeResult]:
         """Return the binding mode with the lowest free energy.
@@ -260,6 +300,136 @@ class DockingResult:
             fh.write(text)
             fh.write("\n")
         return None
+
+    @classmethod
+    def from_json(
+        cls, source: Union[str, Path], *, source_dir: Union[str, Path, None] = None
+    ) -> "DockingResult":
+        """Load a :class:`DockingResult` from JSON produced by :meth:`to_json`.
+
+        Accepts either a file path or a raw JSON string.  The binding-mode
+        records are reconstructed into :class:`BindingModeResult` objects
+        (each with a single :class:`PoseResult` placeholder pointing to the
+        best pose path, when available).
+
+        Args:
+            source: Path to a JSON file, or a JSON string.
+            source_dir: Override the ``source_dir`` stored in the JSON payload.
+                Useful when the original output directory has moved.
+
+        Returns:
+            Reconstructed :class:`DockingResult`.
+
+        Raises:
+            json.JSONDecodeError: If the input is not valid JSON.
+            KeyError: If required fields are missing from the JSON payload.
+        """
+        source_path = Path(source)
+        if source_path.is_file():
+            text = source_path.read_text(encoding="utf-8")
+        else:
+            text = str(source)
+
+        payload = json.loads(text)
+        resolved_dir = Path(source_dir) if source_dir else Path(payload["source_dir"])
+
+        modes: List[BindingModeResult] = []
+        for rec in payload.get("binding_modes", []):
+            best_path = rec.get("best_pose_path")
+            poses: List[PoseResult] = []
+            if best_path is not None:
+                poses.append(
+                    PoseResult(
+                        path=Path(best_path),
+                        mode_id=rec["mode_id"],
+                        pose_rank=1,
+                        cf=rec.get("best_cf"),
+                        free_energy=rec.get("free_energy"),
+                        enthalpy=rec.get("enthalpy"),
+                        entropy=rec.get("entropy"),
+                        heat_capacity=rec.get("heat_capacity"),
+                        std_energy=rec.get("std_energy"),
+                        temperature=rec.get("temperature"),
+                    )
+                )
+            modes.append(
+                BindingModeResult(
+                    mode_id=rec["mode_id"],
+                    rank=rec["rank"],
+                    poses=poses,
+                    free_energy=rec.get("free_energy"),
+                    enthalpy=rec.get("enthalpy"),
+                    entropy=rec.get("entropy"),
+                    heat_capacity=rec.get("heat_capacity"),
+                    std_energy=rec.get("std_energy"),
+                    best_cf=rec.get("best_cf"),
+                    temperature=rec.get("temperature"),
+                )
+            )
+
+        return cls(
+            source_dir=resolved_dir,
+            binding_modes=modes,
+            temperature=payload.get("temperature"),
+            metadata=payload.get("metadata", {}),
+        )
+
+    @classmethod
+    def from_csv(cls, source: Union[str, Path]) -> "DockingResult":
+        """Reconstruct a DockingResult from CSV produced by :meth:`to_csv`.
+
+        Accepts either a file path or a CSV-encoded string.  Each row becomes
+        one :class:`BindingModeResult` with an empty ``poses`` list.
+
+        Args:
+            source: Path to a CSV file, or a CSV-encoded string.
+
+        Returns:
+            :class:`DockingResult` with binding modes populated from the
+            CSV rows.
+        """
+        source_path = Path(source)
+        if source_path.suffix == ".csv" or source_path.exists():
+            text = source_path.read_text(encoding="utf-8")
+        else:
+            text = str(source)
+
+        reader = csv.DictReader(io.StringIO(text))
+        modes: List[BindingModeResult] = []
+        for row in reader:
+
+            def _float_or_none(key: str) -> Optional[float]:
+                val = row.get(key)
+                if val is None or val == "" or val == "None":
+                    return None
+                return float(val)
+
+            def _int_or_none(key: str) -> Optional[int]:
+                val = row.get(key)
+                if val is None or val == "" or val == "None":
+                    return None
+                return int(float(val))
+
+            modes.append(
+                BindingModeResult(
+                    mode_id=int(row["mode_id"]),
+                    rank=int(row["rank"]),
+                    poses=[],
+                    free_energy=_float_or_none("free_energy"),
+                    enthalpy=_float_or_none("enthalpy"),
+                    entropy=_float_or_none("entropy"),
+                    heat_capacity=_float_or_none("heat_capacity"),
+                    std_energy=_float_or_none("std_energy"),
+                    best_cf=_float_or_none("best_cf"),
+                    temperature=_float_or_none("temperature"),
+                )
+            )
+
+        return cls(
+            source_dir=Path("."),
+            binding_modes=modes,
+            metadata={},
+        )
 
     def to_csv(self, path: Union[str, Path, None] = None) -> Optional[str]:
         """Write binding mode summary to CSV.

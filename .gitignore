@@ -1,4 +1,9 @@
 *
+# CI and build infrastructure
+!.github
+!.github/**
+!cmake
+!cmake/**
 # source files
 !LIB
 !LIB/**
@@ -31,6 +36,7 @@
 python/**/__pycache__
 python/__pycache__
 python/**/*.egg-info
+python/**/*.egg-info/**
 python/**/*.so
 # dependencies files
 !*.def
