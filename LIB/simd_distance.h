@@ -1,5 +1,12 @@
-// simd_distance.h — AVX2-vectorised geometric primitives for FlexAIDdS
-// Requires -mavx2 -mfma (GCC/Clang) or /arch:AVX2 (MSVC)
+// simd_distance.h — SIMD-vectorised geometric primitives for FlexAIDdS
+//
+// Hardware dispatch (compile-time):
+//   1. AVX-512 (__AVX512F__)  — 16 floats/cycle, native reciprocal/rsqrt
+//   2. AVX2    (__AVX2__)     — 8 floats/cycle, FMA
+//   3. Scalar  (always)       — portable fallback
+//
+// Requires -mavx512f (AVX-512) or -mavx2 -mfma (AVX2) on GCC/Clang,
+// or /arch:AVX512 / /arch:AVX2 on MSVC.
 #pragma once
 
 #include <cmath>
@@ -12,11 +19,17 @@
 #  define FLEXAIDS_RESTRICT __restrict__
 #endif
 
-#if defined(__AVX2__)
+#if defined(__AVX512F__)
 #  include <immintrin.h>
-#  define FLEXAIDS_HAS_AVX2 1
+#  define FLEXAIDS_HAS_AVX512 1
+#  define FLEXAIDS_HAS_AVX2   1   // AVX-512 implies AVX2
+#elif defined(__AVX2__)
+#  include <immintrin.h>
+#  define FLEXAIDS_HAS_AVX512 0
+#  define FLEXAIDS_HAS_AVX2   1
 #else
-#  define FLEXAIDS_HAS_AVX2 0
+#  define FLEXAIDS_HAS_AVX512 0
+#  define FLEXAIDS_HAS_AVX2   0
 #endif
 
 namespace simd {
@@ -49,6 +62,109 @@ inline void normalize3(float* v) noexcept {
     float inv_len = 1.0f / std::sqrt(dot3(v, v));
     v[0] *= inv_len;  v[1] *= inv_len;  v[2] *= inv_len;
 }
+
+// ─── AVX-512 implementations ────────────────────────────────────────────────
+// Process 16 floats per cycle. Functions are named with _16x suffix.
+
+#if FLEXAIDS_HAS_AVX512
+
+// Squared distances between one point B and 16 points A stored in SOA layout.
+//   ax[16], ay[16], az[16] – x/y/z of 16 A atoms
+//   bx, by, bz             – coordinates of atom B
+//   out[16]                – results
+inline void distance2_1x16(const float* FLEXAIDS_RESTRICT ax,
+                            const float* FLEXAIDS_RESTRICT ay,
+                            const float* FLEXAIDS_RESTRICT az,
+                            float bx, float by, float bz,
+                            float* FLEXAIDS_RESTRICT out) noexcept {
+    __m512 vbx = _mm512_set1_ps(bx);
+    __m512 vby = _mm512_set1_ps(by);
+    __m512 vbz = _mm512_set1_ps(bz);
+    __m512 dx  = _mm512_sub_ps(_mm512_loadu_ps(ax), vbx);
+    __m512 dy  = _mm512_sub_ps(_mm512_loadu_ps(ay), vby);
+    __m512 dz  = _mm512_sub_ps(_mm512_loadu_ps(az), vbz);
+    __m512 r2  = _mm512_fmadd_ps(dz, dz,
+                 _mm512_fmadd_ps(dy, dy,
+                 _mm512_mul_ps(dx, dx)));
+    _mm512_storeu_ps(out, r2);
+}
+
+// Sum of squared distances over N atoms (AOS xyz layout), AVX-512 path.
+// Returns Σ |a_i - b_i|²
+inline float sum_sq_distances_avx512(const float* FLEXAIDS_RESTRICT a_xyz,
+                                      const float* FLEXAIDS_RESTRICT b_xyz,
+                                      int N) noexcept {
+    __m512 acc = _mm512_setzero_ps();
+    int i = 0;
+    for (; i + 15 < N; i += 16) {
+        for (int c = 0; c < 3; ++c) {
+            // Gather 16 values at stride 3
+            float a16[16], b16[16];
+            for (int k = 0; k < 16; ++k) {
+                a16[k] = a_xyz[(i+k)*3 + c];
+                b16[k] = b_xyz[(i+k)*3 + c];
+            }
+            __m512 da = _mm512_sub_ps(_mm512_loadu_ps(a16), _mm512_loadu_ps(b16));
+            acc = _mm512_fmadd_ps(da, da, acc);
+        }
+    }
+    float sum = _mm512_reduce_add_ps(acc);
+    // Tail: scalar
+    for (; i < N; ++i) {
+        for (int c = 0; c < 3; ++c)
+            sum += sq(a_xyz[i*3+c] - b_xyz[i*3+c]);
+    }
+    return sum;
+}
+
+// Lennard-Jones r^-12 wall energy for 16 distances simultaneously.
+//   r2[16] – squared distances (must NOT be zero)
+//   inv_rAB12 – precomputed (permeability * r_AB)^12
+//   k_wall – wall constant
+// Writes Ewall[16]; caller masks < clash_distance.
+inline void lj_wall_16x(const float* FLEXAIDS_RESTRICT r2,
+                          float inv_rAB12,
+                          float k_wall,
+                          float* FLEXAIDS_RESTRICT Ewall) noexcept {
+    __m512 vr2 = _mm512_loadu_ps(r2);
+    // AVX-512 has native 14-bit rcp; one Newton-Raphson refinement for ~23-bit
+    __m512 inv_r2 = _mm512_rcp14_ps(vr2);
+    inv_r2 = _mm512_mul_ps(inv_r2,
+              _mm512_sub_ps(_mm512_set1_ps(2.0f),
+              _mm512_mul_ps(vr2, inv_r2)));
+    __m512 inv_r4  = _mm512_mul_ps(inv_r2, inv_r2);
+    __m512 inv_r6  = _mm512_mul_ps(inv_r4, inv_r2);
+    __m512 inv_r12 = _mm512_mul_ps(inv_r6, inv_r6);
+    __m512 vKWALL  = _mm512_set1_ps(k_wall);
+    __m512 vrAB12  = _mm512_set1_ps(inv_rAB12);
+    __m512 e = _mm512_mul_ps(vKWALL, _mm512_sub_ps(inv_r12, vrAB12));
+    _mm512_storeu_ps(Ewall, e);
+}
+
+// Batched dot products for 16 atoms at a time (AOS xyz layout).
+inline void dot3_batch_avx512(const float* FLEXAIDS_RESTRICT a,
+                               const float* FLEXAIDS_RESTRICT b,
+                               float* FLEXAIDS_RESTRICT out, int N) noexcept {
+    int i = 0;
+    for (; i + 15 < N; i += 16) {
+        __m512 s = _mm512_setzero_ps();
+        for (int c = 0; c < 3; ++c) {
+            float a16[16], b16[16];
+            for (int k = 0; k < 16; ++k) {
+                a16[k] = a[(i+k)*3+c];
+                b16[k] = b[(i+k)*3+c];
+            }
+            s = _mm512_fmadd_ps(_mm512_loadu_ps(a16),
+                                _mm512_loadu_ps(b16), s);
+        }
+        _mm512_storeu_ps(out + i, s);
+    }
+    // Scalar tail
+    for (; i < N; ++i)
+        out[i] = a[i*3]*b[i*3] + a[i*3+1]*b[i*3+1] + a[i*3+2]*b[i*3+2];
+}
+
+#endif  // FLEXAIDS_HAS_AVX512
 
 // ─── AVX2 implementations ────────────────────────────────────────────────────
 
@@ -91,15 +207,13 @@ inline void distance2_1x8(const float* FLEXAIDS_RESTRICT ax,
 inline float sum_sq_distances(const float* FLEXAIDS_RESTRICT a_xyz,
                                const float* FLEXAIDS_RESTRICT b_xyz,
                                int N) noexcept {
+#if FLEXAIDS_HAS_AVX512
+    return sum_sq_distances_avx512(a_xyz, b_xyz, N);
+#else
     __m256 acc = _mm256_setzero_ps();
     int i = 0;
     for (; i <= N - 8; i += 8) {
-        // Load 8 xyz triplets for a and b in AOS layout (24 floats each)
-        // We handle 1 component at a time: x, y, z separately
-        // Gather with stride-3 – use scalar here for correctness; the inner
-        // loop is over atoms so the hot path is the per-component subtraction.
         for (int c = 0; c < 3; ++c) {
-            // Gather 8 values at stride 3
             float a8[8], b8[8];
             for (int k = 0; k < 8; ++k) {
                 a8[k] = a_xyz[(i+k)*3 + c];
@@ -115,6 +229,7 @@ inline float sum_sq_distances(const float* FLEXAIDS_RESTRICT a_xyz,
             sum += sq(a_xyz[i*3+c] - b_xyz[i*3+c]);
     }
     return sum;
+#endif
 }
 
 // Lennard-Jones r^-12 wall energy for 8 distances simultaneously.
@@ -143,12 +258,13 @@ inline void lj_wall_8x(const float* FLEXAIDS_RESTRICT r2,
 }
 
 // Batched dot products: result[i] = dot(a[i], b[i]) for i in [0,N)
-// a, b are Nx3 in interleaved layout. N must be multiple of 8 or padded.
+// a, b are Nx3 in interleaved layout.
 inline void dot3_batch(const float* FLEXAIDS_RESTRICT a,
                        const float* FLEXAIDS_RESTRICT b,
                        float* FLEXAIDS_RESTRICT out, int N) noexcept {
-    __m256 acc = _mm256_setzero_ps();
-    // Separate into SOA on-the-fly (each component processed independently)
+#if FLEXAIDS_HAS_AVX512
+    dot3_batch_avx512(a, b, out, N);
+#else
     int i = 0;
     for (; i <= N - 8; i += 8) {
         __m256 s = _mm256_setzero_ps();
@@ -163,10 +279,9 @@ inline void dot3_batch(const float* FLEXAIDS_RESTRICT a,
         }
         _mm256_storeu_ps(out + i, s);
     }
-    for (; i < N; ++i) {
+    for (; i < N; ++i)
         out[i] = a[i*3]*b[i*3] + a[i*3+1]*b[i*3+1] + a[i*3+2]*b[i*3+2];
-    }
-    (void)acc;
+#endif
 }
 
 #else  // ─── scalar fallback versions ─────────────────────────────────────────
