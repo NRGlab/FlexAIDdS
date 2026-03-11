@@ -19,6 +19,7 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
+from .__version__ import __version__
 from .results import load_results
 from .__version__ import __version__
 
