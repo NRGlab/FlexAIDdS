@@ -28,6 +28,8 @@ except ImportError:
     kB_kcal = 0.001987206   # kcal mol⁻¹ K⁻¹
     kB_SI = 1.380649e-23    # J K⁻¹
     HAS_CORE_BINDINGS = False
+    # Fall back to pure-Python implementations where available
+    from .encom import ENCoMEngine, NormalMode, VibrationalEntropy
 
 from .thermodynamics import StatMechEngine, Thermodynamics
 from .models import BindingModeResult, DockingResult, PoseResult
@@ -40,9 +42,13 @@ __all__ = [
     "BindingModeResult",
     "DockingResult",
     "load_results",
-    # StatMech (pure Python, always available)
+    # StatMech (always available via pure-Python fallback)
     "StatMechEngine",
     "Thermodynamics",
+    # ENCoM (always available via pure-Python fallback)
+    "ENCoMEngine",
+    "NormalMode",
+    "VibrationalEntropy",
     # tENCoM results (always available, pure Python)
     "FlexModeResult",
     "FlexPopulationResult",
@@ -63,8 +69,4 @@ if HAS_CORE_BINDINGS:
         "Replica",
         "WHAMBin",
         "TIPoint",
-        "ENCoMEngine",
-        "NormalMode",
-        "VibrationalEntropy",
     ])
-
