@@ -477,3 +477,97 @@ class TestDockingResultToDataframeSuccess:
         assert "mode_id" in df.columns
         assert df.iloc[0]["mode_id"] == 1
         assert df.iloc[0]["free_energy"] == pytest.approx(-9.8)
+
+
+# ===========================================================================
+# DockingResult.from_json
+# ===========================================================================
+
+class TestDockingResultFromJson:
+    def _make_result(self) -> DockingResult:
+        poses = [_pose(path="p1.pdb", cf=-10.0), _pose(path="p2.pdb", cf=-9.0)]
+        modes = [
+            BindingModeResult(
+                mode_id=1, rank=1, poses=poses,
+                free_energy=-9.8, enthalpy=-9.5, entropy=0.001,
+                heat_capacity=0.05, std_energy=0.3,
+                best_cf=-10.0, temperature=300.0,
+            ),
+            BindingModeResult(
+                mode_id=2, rank=2, poses=[],
+                free_energy=None, best_cf=None, temperature=None,
+            ),
+        ]
+        return DockingResult(
+            source_dir=Path("/tmp"), binding_modes=modes, temperature=300.0,
+        )
+
+    def test_round_trip_from_string(self):
+        original = self._make_result()
+        json_text = original.to_json()
+        loaded = DockingResult.from_json(json_text)
+        assert loaded.n_modes == original.n_modes
+        assert loaded.temperature == pytest.approx(original.temperature)
+        assert str(loaded.source_dir) == str(original.source_dir)
+
+    def test_round_trip_preserves_mode_fields(self):
+        original = self._make_result()
+        loaded = DockingResult.from_json(original.to_json())
+        mode = loaded.binding_modes[0]
+        assert mode.mode_id == 1
+        assert mode.rank == 1
+        assert mode.free_energy == pytest.approx(-9.8)
+        assert mode.enthalpy == pytest.approx(-9.5)
+        assert mode.entropy == pytest.approx(0.001)
+        assert mode.heat_capacity == pytest.approx(0.05)
+        assert mode.std_energy == pytest.approx(0.3)
+        assert mode.best_cf == pytest.approx(-10.0)
+        assert mode.temperature == pytest.approx(300.0)
+
+    def test_round_trip_none_mode(self):
+        original = self._make_result()
+        loaded = DockingResult.from_json(original.to_json())
+        mode2 = loaded.binding_modes[1]
+        assert mode2.free_energy is None
+        assert mode2.best_cf is None
+        assert mode2.temperature is None
+        assert mode2.n_poses == 0
+
+    def test_round_trip_from_file(self, tmp_path):
+        original = self._make_result()
+        json_file = tmp_path / "result.json"
+        original.to_json(path=json_file)
+        loaded = DockingResult.from_json(json_file)
+        assert loaded.n_modes == 2
+        assert loaded.temperature == pytest.approx(300.0)
+
+    def test_source_dir_override(self):
+        original = self._make_result()
+        loaded = DockingResult.from_json(
+            original.to_json(), source_dir="/new/path"
+        )
+        assert str(loaded.source_dir) == "/new/path"
+
+    def test_metadata_preserved(self):
+        result = DockingResult(
+            source_dir=Path("/tmp"),
+            binding_modes=[],
+            metadata={"n_pose_files": 42},
+        )
+        loaded = DockingResult.from_json(result.to_json())
+        assert loaded.metadata["n_pose_files"] == 42
+
+    def test_reconstructed_pose_has_best_path(self):
+        original = self._make_result()
+        loaded = DockingResult.from_json(original.to_json())
+        mode = loaded.binding_modes[0]
+        assert mode.n_poses == 1
+        best = mode.best_pose()
+        assert best is not None
+        assert best.path.name == "p1.pdb"
+        assert best.cf == pytest.approx(-10.0)
+
+    def test_invalid_json_raises(self):
+        import json as json_mod
+        with pytest.raises(json_mod.JSONDecodeError):
+            DockingResult.from_json("not valid json {{")

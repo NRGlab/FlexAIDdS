@@ -262,38 +262,61 @@ class DockingResult:
         return None
 
     @classmethod
-    def from_json(cls, source: Union[str, Path]) -> "DockingResult":
-        """Reconstruct a DockingResult from JSON produced by :meth:`to_json`.
+    def from_json(
+        cls, source: Union[str, Path], *, source_dir: Union[str, Path, None] = None
+    ) -> "DockingResult":
+        """Load a :class:`DockingResult` from JSON produced by :meth:`to_json`.
 
-        Accepts either a file path or a JSON string.  Binding modes are
-        recreated from the flat record representation; individual poses are
-        not restored (each mode will contain an empty ``poses`` list).
+        Accepts either a file path or a raw JSON string.  The binding-mode
+        records are reconstructed into :class:`BindingModeResult` objects
+        (each with a single :class:`PoseResult` placeholder pointing to the
+        best pose path, when available).
 
         Args:
-            source: Path to a JSON file, or a JSON-encoded string.
+            source: Path to a JSON file, or a JSON string.
+            source_dir: Override the ``source_dir`` stored in the JSON payload.
+                Useful when the original output directory has moved.
 
         Returns:
-            :class:`DockingResult` with binding modes populated from the
-            serialised records.
+            Reconstructed :class:`DockingResult`.
 
         Raises:
-            FileNotFoundError: If *source* looks like a file path but the
-                file does not exist.
+            json.JSONDecodeError: If the input is not valid JSON.
+            KeyError: If required fields are missing from the JSON payload.
         """
         source_path = Path(source)
-        if source_path.suffix == ".json" or source_path.exists():
+        if source_path.is_file():
             text = source_path.read_text(encoding="utf-8")
         else:
             text = str(source)
 
-        data = json.loads(text)
+        payload = json.loads(text)
+        resolved_dir = Path(source_dir) if source_dir else Path(payload["source_dir"])
+
         modes: List[BindingModeResult] = []
-        for rec in data.get("binding_modes", []):
+        for rec in payload.get("binding_modes", []):
+            best_path = rec.get("best_pose_path")
+            poses: List[PoseResult] = []
+            if best_path is not None:
+                poses.append(
+                    PoseResult(
+                        path=Path(best_path),
+                        mode_id=rec["mode_id"],
+                        pose_rank=1,
+                        cf=rec.get("best_cf"),
+                        free_energy=rec.get("free_energy"),
+                        enthalpy=rec.get("enthalpy"),
+                        entropy=rec.get("entropy"),
+                        heat_capacity=rec.get("heat_capacity"),
+                        std_energy=rec.get("std_energy"),
+                        temperature=rec.get("temperature"),
+                    )
+                )
             modes.append(
                 BindingModeResult(
                     mode_id=rec["mode_id"],
                     rank=rec["rank"],
-                    poses=[],
+                    poses=poses,
                     free_energy=rec.get("free_energy"),
                     enthalpy=rec.get("enthalpy"),
                     entropy=rec.get("entropy"),
@@ -305,10 +328,10 @@ class DockingResult:
             )
 
         return cls(
-            source_dir=Path(data.get("source_dir", ".")),
+            source_dir=resolved_dir,
             binding_modes=modes,
-            temperature=data.get("temperature"),
-            metadata=data.get("metadata", {}),
+            temperature=payload.get("temperature"),
+            metadata=payload.get("metadata", {}),
         )
 
     @classmethod
