@@ -183,8 +183,8 @@ class TestNormalModeCpp:
 @needs_core
 class TestVibrationalEntropyCpp:
     def _make(self, s_vib=0.01, dG_vib=-3.0, temperature=300.0):
-        from flexaidds import VibrationalEntropy
-        return VibrationalEntropy(
+        import flexaidds._core as _core
+        return _core.VibrationalEntropy(
             S_vib_kcal_mol_K=s_vib,
             dG_vib_kcal_mol=dG_vib,
             temperature=temperature,
@@ -212,42 +212,42 @@ class TestVibrationalEntropyCpp:
 @needs_core
 class TestENCoMEngineCpp:
     def test_default_cutoff(self):
-        from flexaidds import ENCoMEngine
-        eng = ENCoMEngine()
+        import flexaidds._core as _core
+        eng = _core.ENCoMEngine()
         # Default eigenvalue_cutoff should be small positive
         assert eng.eigenvalue_cutoff > 0.0
 
     def test_custom_cutoff(self):
-        from flexaidds import ENCoMEngine
-        eng = ENCoMEngine(eigenvalue_cutoff=1e-5)
+        import flexaidds._core as _core
+        eng = _core.ENCoMEngine(eigenvalue_cutoff=1e-5)
         assert abs(eng.eigenvalue_cutoff - 1e-5) < 1e-12
 
     def test_compute_with_empty_modes_zero(self):
         """No modes -> zero vibrational entropy."""
-        from flexaidds import ENCoMEngine
-        eng = ENCoMEngine()
+        import flexaidds._core as _core
+        eng = _core.ENCoMEngine()
         result = eng.compute_vibrational_entropy([], temperature=300.0)
         assert result.S_vib_kcal_mol_K == 0.0
 
     def test_compute_with_positive_eigenvalues(self):
         """Positive eigenvalues -> positive vibrational entropy."""
-        from flexaidds import ENCoMEngine, NormalMode
-        eng = ENCoMEngine()
+        import flexaidds._core as _core
+        eng = _core.ENCoMEngine()
         modes = [
-            NormalMode(eigenvalue=1.0, frequency=100.0),
-            NormalMode(eigenvalue=2.0, frequency=141.4),
-            NormalMode(eigenvalue=0.5, frequency=70.7),
+            _core.NormalMode(eigenvalue=1.0, frequency=100.0),
+            _core.NormalMode(eigenvalue=2.0, frequency=141.4),
+            _core.NormalMode(eigenvalue=0.5, frequency=70.7),
         ]
         result = eng.compute_vibrational_entropy(modes, temperature=300.0)
         assert result.S_vib_kcal_mol_K >= 0.0
 
     def test_more_modes_higher_entropy(self):
         """Adding more vibrational modes should not decrease entropy."""
-        from flexaidds import ENCoMEngine, NormalMode
-        eng = ENCoMEngine()
+        import flexaidds._core as _core
+        eng = _core.ENCoMEngine()
 
         def make_modes(n):
-            return [NormalMode(eigenvalue=float(i + 1), frequency=float((i + 1) * 50))
+            return [_core.NormalMode(eigenvalue=float(i + 1), frequency=float((i + 1) * 50))
                     for i in range(n)]
 
         s3 = eng.compute_vibrational_entropy(make_modes(3), 300.0).S_vib_kcal_mol_K

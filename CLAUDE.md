@@ -204,6 +204,7 @@ ctest --test-dir build
 Key test files in `tests/`:
 - `test_statmech.cpp` — StatMechEngine: partition function, Boltzmann probabilities, WHAM, parallel tempering, TI, log-sum-exp stability, edge cases
 - `test_binding_mode_statmech.cpp` — BindingMode ↔ StatMechEngine integration, pose clustering, thermodynamic integration with GA ensemble
+- `test_binding_mode_vibrational.cpp` — BindingMode ENCoM vibrational correction (Phase 3)
 - `test_ga_validation.cpp` — GA correctness: selection, crossover, mutation operators, fitness landscape convergence
 - `test_hardware_dispatch.cpp` — ShannonThermoStack: entropy computation, hardware backend reporting (CPU/CUDA/Metal), distribution edge cases
 - `test_tencom_diff.cpp` — tENCoM differential engine: Cα PDB reader, mode overlap, B-factor diffs, synthetic PDB generation
@@ -222,8 +223,9 @@ Key test files in `python/tests/`:
 - `test_statmech.py` — StatMechEngine accuracy (requires C++ bindings)
 - `test_statmech_smoke.py` — Smoke test for CI
 - `test_cli.py` — CLI entry point tests (`python -m flexaidds`)
-- `test_docking.py` — High-level docking interface
-- `test_encom.py` — ENCoM normal-mode analysis
+- `test_docking.py` — Docking API and BindingMode thermodynamics
+- `test_encom.py` — ENCoM vibrational entropy
+- `test_tencm.py` — TorsionalENM and ShannonThermoStack (pure Python)
 - `test_io.py` — PDB I/O and REMARK parsing
 - `test_thermodynamics.py` / `test_thermodynamics_dataclass.py` — Thermodynamics module
 - `test_models.py` — Data model validation
@@ -332,15 +334,15 @@ Plugin files: `gui.py` (FlexAIDSPanel widget), `visualization.py` (rendering), `
 
 - **Legacy**: `./FlexAID config.inp ga.inp`
 - **CLI**: `./flexaids dock receptor.pdb ligand.mol2`
-- **Python API**: `import flexaidds` (Phase 2, partially complete)
+- **Python**: `import flexaidds` (Phase 2, complete)
 - **Python CLI**: `python -m flexaidds <results_dir> [--json|--csv|--top N]`
 - **PyMOL**: Load plugin from `pymol_plugin/`
 
 ### Development Phases
 
 - **Phase 1** (Complete): StatMechEngine integration
-- **Phase 2** (In Progress): Python bindings & result I/O
-- **Phase 3** (Planned): ENCoM vibrational entropy integration
+- **Phase 2** (Complete): Python bindings, result I/O, `dock()` API, ENCoM `compute_delta_s()`
+- **Phase 3** (Complete): ENCoM vibrational entropy integration into docking pipeline
 
 ## Key Files to Know
 
@@ -368,6 +370,7 @@ Plugin files: `gui.py` (FlexAIDSPanel widget), `visualization.py` (rendering), `
 | `python/flexaidds/encom.py` | ENCoM normal-mode analysis |
 | `python/flexaidds/thermodynamics.py` | Pure-Python StatMech fallback |
 | `python/flexaidds/visualization.py` | PyMOL integration helpers |
+| `python/flexaidds/tencm.py` | TorsionalENM + ShannonThermoStack Python wrappers |
 | `python/bindings/core_bindings.cpp` | pybind11 bridge code |
 | `pymol_plugin/__init__.py` | PyMOL plugin registration |
 | `CMakeLists.txt` | Build configuration (all targets, options) |
