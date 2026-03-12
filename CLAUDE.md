@@ -93,6 +93,9 @@ ctest --test-dir build
 Key test files in `tests/`:
 - `test_statmech.cpp` — StatMechEngine correctness
 - `test_binding_mode_statmech.cpp` — BindingMode ↔ StatMechEngine integration
+- `test_binding_mode_vibrational.cpp` — BindingMode ENCoM vibrational correction (Phase 3)
+- `test_tencom_diff.cpp` — TorsionalENM differential engine
+- `test_hardware_dispatch.cpp` — ShannonThermoStack hardware dispatch
 - `test_ga_validation.cpp` — Genetic algorithm validation
 
 ### Python Tests (pytest)
@@ -108,6 +111,9 @@ Key test files in `python/tests/`:
 - `test_results_loader_models.py` — Data model tests (pure Python)
 - `test_statmech.py` — StatMechEngine accuracy (requires C++ bindings)
 - `test_statmech_smoke.py` — Smoke test for CI
+- `test_tencm.py` — TorsionalENM and ShannonThermoStack (pure Python)
+- `test_docking.py` — Docking API and BindingMode thermodynamics
+- `test_encom.py` — ENCoM vibrational entropy
 
 **Marker**: `@requires_core` — marks tests that need the compiled C++ `_core` extension. These skip gracefully if bindings are not built.
 
@@ -165,7 +171,7 @@ Key test files in `python/tests/`:
 
 - **Phase 1** (Complete): StatMechEngine integration
 - **Phase 2** (Complete): Python bindings, result I/O, `dock()` API, ENCoM `compute_delta_s()`
-- **Phase 3** (Planned): ENCoM vibrational entropy integration
+- **Phase 3** (Complete): ENCoM vibrational entropy integration into docking pipeline
 
 ## Key Files to Know
 
@@ -176,7 +182,11 @@ Key test files in `python/tests/`:
 | `LIB/statmech.cpp` | Statistical mechanics engine |
 | `LIB/Vcontacts.cpp` | Voronoi contact scoring |
 | `LIB/BindingMode.cpp` | Pose clustering + thermodynamics |
+| `LIB/tencm.cpp` | Torsional ENM backbone flexibility |
+| `LIB/encom.cpp` | ENCoM vibrational entropy |
+| `LIB/ShannonThermoStack/` | Shannon entropy + hardware acceleration |
 | `python/flexaidds/__init__.py` | Python API surface |
+| `python/flexaidds/tencm.py` | TorsionalENM + ShannonThermoStack Python wrappers |
 | `python/bindings/` | pybind11 bridge code |
 | `CMakeLists.txt` | Build configuration (all targets, options) |
 | `.github/workflows/ci.yml` | CI pipeline definition |
