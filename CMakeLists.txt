@@ -902,7 +902,167 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME CavityDetectTests COMMAND test_cavity_detect)
 
-    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_hardware_detect_dispatch, test_tencom_diff, test_ptm_attachment, test_gaboom, test_vcontacts, test_cleft_cavity, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect")
+    # test_binding_mode_statmech — BindingMode ↔ StatMechEngine integration tests
+    add_executable(test_binding_mode_statmech
+        tests/test_binding_mode_statmech.cpp
+        tests/stubs.cpp
+        LIB/gaboom.cpp
+        LIB/Vcontacts.cpp
+        LIB/statmech.cpp
+        LIB/geometry.cpp
+        LIB/tencm.cpp
+        LIB/encom.cpp
+        LIB/BindingMode.cpp
+        LIB/ShannonThermoStack/ShannonThermoStack.cpp
+        LIB/CleftDetector.cpp
+        LIB/NATURaL/NATURaLDualAssembly.cpp
+        LIB/NATURaL/RibosomeElongation.cpp
+        LIB/NATURaL/TransloconInsertion.cpp
+        LIB/hardware_dispatch.cpp
+        LIB/hardware_detect.cpp
+    )
+    target_include_directories(test_binding_mode_statmech PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
+    )
+    target_link_libraries(test_binding_mode_statmech PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_binding_mode_statmech PRIVATE /O2)
+    else()
+        target_compile_options(test_binding_mode_statmech PRIVATE -O2)
+    endif()
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_binding_mode_statmech PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+        target_link_libraries(test_binding_mode_statmech PRIVATE Eigen3::Eigen)
+        target_compile_definitions(test_binding_mode_statmech PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
+    add_test(NAME BindingModeStatMechTests COMMAND test_binding_mode_statmech)
+
+    # test_binding_mode_advanced — BindingMode advanced methods (delta_G, WHAM, representative)
+    add_executable(test_binding_mode_advanced
+        tests/test_binding_mode_advanced.cpp
+        tests/stubs.cpp
+        LIB/gaboom.cpp
+        LIB/Vcontacts.cpp
+        LIB/statmech.cpp
+        LIB/geometry.cpp
+        LIB/tencm.cpp
+        LIB/encom.cpp
+        LIB/BindingMode.cpp
+        LIB/ShannonThermoStack/ShannonThermoStack.cpp
+        LIB/CleftDetector.cpp
+        LIB/NATURaL/NATURaLDualAssembly.cpp
+        LIB/NATURaL/RibosomeElongation.cpp
+        LIB/NATURaL/TransloconInsertion.cpp
+        LIB/hardware_dispatch.cpp
+        LIB/hardware_detect.cpp
+    )
+    target_include_directories(test_binding_mode_advanced PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
+    )
+    target_link_libraries(test_binding_mode_advanced PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_binding_mode_advanced PRIVATE /O2)
+    else()
+        target_compile_options(test_binding_mode_advanced PRIVATE -O2)
+    endif()
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_binding_mode_advanced PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+        target_link_libraries(test_binding_mode_advanced PRIVATE Eigen3::Eigen)
+        target_compile_definitions(test_binding_mode_advanced PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
+    add_test(NAME BindingModeAdvancedTests COMMAND test_binding_mode_advanced)
+
+    # test_ga_core — GA primitive operations (QuickSort, mutate, crossover, copy)
+    add_executable(test_ga_core
+        tests/test_ga_core.cpp
+        tests/stubs.cpp
+        LIB/gaboom.cpp
+        LIB/Vcontacts.cpp
+        LIB/statmech.cpp
+        LIB/geometry.cpp
+        LIB/tencm.cpp
+        LIB/encom.cpp
+        LIB/BindingMode.cpp
+        LIB/ShannonThermoStack/ShannonThermoStack.cpp
+        LIB/CleftDetector.cpp
+        LIB/NATURaL/NATURaLDualAssembly.cpp
+        LIB/NATURaL/RibosomeElongation.cpp
+        LIB/NATURaL/TransloconInsertion.cpp
+        LIB/hardware_dispatch.cpp
+        LIB/hardware_detect.cpp
+    )
+    target_include_directories(test_ga_core PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
+    )
+    target_link_libraries(test_ga_core PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_ga_core PRIVATE /O2)
+    else()
+        target_compile_options(test_ga_core PRIVATE -O2)
+    endif()
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_ga_core PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+        target_link_libraries(test_ga_core PRIVATE Eigen3::Eigen)
+        target_compile_definitions(test_ga_core PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
+    add_test(NAME GACoreTests COMMAND test_ga_core)
+
+    # test_ga_validation — CF scoring functions, eval_span clamping, batch result structure
+    add_executable(test_ga_validation
+        tests/test_ga_validation.cpp
+        tests/stubs.cpp
+        LIB/gaboom.cpp
+        LIB/Vcontacts.cpp
+        LIB/statmech.cpp
+        LIB/geometry.cpp
+        LIB/tencm.cpp
+        LIB/encom.cpp
+        LIB/BindingMode.cpp
+        LIB/ShannonThermoStack/ShannonThermoStack.cpp
+        LIB/CleftDetector.cpp
+        LIB/NATURaL/NATURaLDualAssembly.cpp
+        LIB/NATURaL/RibosomeElongation.cpp
+        LIB/NATURaL/TransloconInsertion.cpp
+        LIB/hardware_dispatch.cpp
+        LIB/hardware_detect.cpp
+    )
+    target_include_directories(test_ga_validation PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
+    )
+    target_link_libraries(test_ga_validation PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_ga_validation PRIVATE /O2)
+    else()
+        target_compile_options(test_ga_validation PRIVATE -O2)
+    endif()
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_ga_validation PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+        target_link_libraries(test_ga_validation PRIVATE Eigen3::Eigen)
+        target_compile_definitions(test_ga_validation PRIVATE FLEXAIDS_HAS_EIGEN)
+    endif()
+    add_test(NAME GAValidationTests COMMAND test_ga_validation)
+
+    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_hardware_detect_dispatch, test_tencom_diff, test_ptm_attachment, test_gaboom, test_vcontacts, test_cleft_cavity, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect, test_binding_mode_statmech, test_binding_mode_advanced, test_ga_core, test_ga_validation")
 endif()
 
 # ─── Swift Bridge (macOS only) ────────────────────────────────────────────

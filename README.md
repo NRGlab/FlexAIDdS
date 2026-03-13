@@ -143,15 +143,20 @@ FlexAIDdS/
 - **Required**: C++20 compiler (GCC >= 10, Clang >= 10, MSVC), CMake >= 3.18
 - **Optional**: Eigen3 (`libeigen3-dev`), OpenMP, CUDA Toolkit, Metal framework (macOS), pybind11
 
-### Build Commands
+### Output Binaries
 
-Both ultra-fast HPC binaries (`FlexAIDdS` + `tENCoM`) are built by default:
+| Binary | Description |
+|:-------|:------------|
+| **`FlexAID`** | Standard docking executable |
+| **`FlexAIDdS`** | Ultra-fast docking (LTO + `-march=native` + stripped) |
+| **`tENCoM`** | Ultra-fast vibrational entropy tool (same optimizations) |
+
+### HPC Deployment
 
 ```bash
-git clone https://github.com/lmorency/FlexAIDdS
-cd FlexAIDdS
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_BUILD_TYPE=Release \
+         -DFLEXAIDS_USE_AVX512=ON \
+         -DFLEXAIDS_USE_OPENMP=ON
 cmake --build . -j $(nproc)
 ```
 
@@ -178,6 +183,16 @@ For cluster / HPC nodes, build once on the target architecture:
 | `ENABLE_TENCOM_BENCHMARK` | OFF     | Build standalone tENCoM benchmark binary |
 | `ENABLE_TENCOM_TOOL`      | OFF     | Build tENCoM vibrational entropy tool    |
 | `ENABLE_VCFBATCH_BENCHMARK`| OFF    | Build VoronoiCFBatch benchmark binary    |
+
+</details>
+
+### With Tests
+
+```bash
+cmake .. -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build . -j $(nproc)
+ctest --test-dir .
+```
 
 ### With Python Bindings
 
@@ -249,9 +264,8 @@ All parameters have built-in defaults in a single JSON schema. Override only wha
 }
 ```
 
-## 📖 Usage Modes
-
-### Python Results Inspection
+<details>
+<summary><strong>📜 Legacy Mode</strong></summary>
 
 The `flexaidds` Python package can inspect existing docking results:
 
@@ -290,7 +304,8 @@ See [Configuration Reference](#-configuration-reference) for all legacy paramete
 tENCoM reference.pdb target1.pdb [target2.pdb ...] [-T temp] [-r cutoff] [-k k0] [-o prefix]
 ```
 
-### Co-Translational / Co-Transcriptional Docking (NATURaL)
+<details>
+<summary><strong>🧬 Co-Translational / Co-Transcriptional Docking (NATURaL)</strong></summary>
 
 NATURaL mode activates **automatically** when the system involves nucleotide ligands or nucleic acid receptors — no special flags needed. Simply dock as usual:
 
@@ -314,7 +329,6 @@ Supported organisms: *E. coli* K-12 and Human HEK293 (codon-specific tRNA abunda
 To **skip** co-translational/co-transcriptional chain growth and treat the receptor as fully folded, use the `--folded` flag:
 
 ```bash
-# Nucleotide system, but dock against the fully folded receptor
 ./FlexAIDdS ribosome.pdb atp_analog.mol2 --folded
 ```
 
@@ -351,6 +365,7 @@ print("S =", thermo.entropy)
 delta_s = fd.ENCoMEngine.compute_delta_s('apo.pdb', 'holo.pdb')
 ```
 
+### 🌡️ Vibrational Entropy Integration (Phase 3)
 ### Vibrational Entropy Integration
 
 ENCoM vibrational entropy is integrated directly into the docking free energy:
@@ -736,6 +751,8 @@ All keys are optional — defaults enable full flexibility at 300 K. See `LIB/co
 The `--rigid` flag overrides flexibility to all-off and temperature to 0.
 The `--folded` flag sets `advanced.assume_folded = true`, treating the receptor as fully folded and skipping NATURaL co-translational/co-transcriptional chain growth even when nucleotide ligands or nucleic acid receptors are detected.
 
+</details>
+
 ---
 
 ## 🧩 Modules
@@ -904,7 +921,7 @@ See [LICENSE](LICENSE) | [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)
 
 ---
 
-## Links
+## 🔗 Links
 
 | | |
 |:--|:--|
