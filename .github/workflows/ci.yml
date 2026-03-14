@@ -24,6 +24,7 @@ jobs:
           python -m pip install pytest numpy
       - name: Run pure-Python tests (no C++ extension needed)
         run: |
+          python -m pip install scipy
           PYTHONPATH=python pytest -q \
             python/tests/test_results_io.py \
             python/tests/test_results_loader_models.py \
@@ -36,7 +37,9 @@ jobs:
             python/tests/test_io.py \
             python/tests/test_cli.py \
             python/tests/test_docking.py \
-            python/tests/test_results.py
+            python/tests/test_results.py \
+            python/tests/test_energy_matrix.py \
+            python/tests/test_train_256x256.py
 
   cxx_core_build:
     name: C++ core (${{ matrix.name }})
@@ -152,8 +155,11 @@ jobs:
         run: cmake --build build-python --parallel --target _core
       - name: Run Python binding tests
         run: |
+          python -m pip install scipy
           PYTHONPATH=python pytest -q \
             python/tests/test_statmech_smoke.py \
             python/tests/test_statmech.py \
             python/tests/test_thermodynamics.py \
-            python/tests/test_encom.py
+            python/tests/test_encom.py \
+            python/tests/test_energy_matrix.py \
+            python/tests/test_train_256x256.py

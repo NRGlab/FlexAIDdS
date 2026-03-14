@@ -15,6 +15,12 @@
 #include "../../LIB/BindingMode.h"
 #endif
 #include "../../LIB/encom.h"
+#include "../../LIB/ShannonThermoStack/ShannonThermoStack.h"
+
+#ifdef FLEXAIDS_USE_256_MATRIX
+// Defined in bindings_matrix.cpp, linked when 256-matrix is enabled
+void register_matrix_bindings(py::module_& m);
+#endif
 
 namespace py = pybind11;
 using namespace statmech;
@@ -350,4 +356,57 @@ PYBIND11_MODULE(_core, m) {
             &encom::ENCoMEngine::free_energy_with_vibrations,
             py::arg("F_electronic"), py::arg("S_vib_kcal_mol_K"), py::arg("temperature_K"),
             "F_total = F_elec − T·S_vib  (kcal/mol)");
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ShannonEnergyMatrix: 256×256 precomputed lookup with file loading
+    // ═══════════════════════════════════════════════════════════════════════
+
+    py::class_<shannon_thermo::ShannonEnergyMatrix>(m, "ShannonEnergyMatrix",
+        "256×256 precomputed Shannon energy matrix with O(1) lookup")
+        .def_static("instance", &shannon_thermo::ShannonEnergyMatrix::instance,
+            py::return_value_policy::reference,
+            "Get the singleton ShannonEnergyMatrix instance")
+        .def("initialise", &shannon_thermo::ShannonEnergyMatrix::initialise,
+            "Initialise from uniform priors (seed 42)")
+        .def("initialise_from_file",
+            &shannon_thermo::ShannonEnergyMatrix::initialise_from_file,
+            py::arg("path"),
+            "Load trained 256×256 matrix from SHNN binary blob")
+        .def("initialise_from_data",
+            [](shannon_thermo::ShannonEnergyMatrix& self,
+               py::array_t<float, py::array::c_style | py::array::forcecast> data) {
+                auto buf = data.request();
+                int count = static_cast<int>(buf.size);
+                self.initialise_from_data(static_cast<const float*>(buf.ptr), count);
+            },
+            py::arg("data"),
+            "Load matrix from float32 numpy array (256*256 elements)")
+        .def("lookup", &shannon_thermo::ShannonEnergyMatrix::lookup,
+            py::arg("bin_i"), py::arg("bin_j"),
+            "O(1) pairwise entropy contribution lookup")
+        .def("is_initialised",
+            &shannon_thermo::ShannonEnergyMatrix::is_initialised)
+        .def("as_numpy",
+            [](const shannon_thermo::ShannonEnergyMatrix& self) {
+                if (!self.is_initialised())
+                    throw std::runtime_error("Matrix not initialised");
+                return py::array_t<double>(
+                    {shannon_thermo::SHANNON_BINS, shannon_thermo::SHANNON_BINS},
+                    self.data(),
+                    py::cast(self)  // prevent dealloc
+                );
+            },
+            "Return matrix as numpy array (256×256, read-only view)")
+        .def("__repr__", [](const shannon_thermo::ShannonEnergyMatrix& self) {
+            return std::string("<ShannonEnergyMatrix 256×256 ") +
+                   (self.is_initialised() ? "initialised" : "uninitialised") + ">";
+        });
+
+    // ShannonThermoStack constants
+    m.attr("SHANNON_BINS") = shannon_thermo::SHANNON_BINS;
+
+#ifdef FLEXAIDS_USE_256_MATRIX
+    // Register 256×256 matrix bindings (atom256, SoftContactMatrix, ShannonMatrixScorer)
+    register_matrix_bindings(m);
+#endif
 }
