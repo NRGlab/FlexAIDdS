@@ -47,6 +47,10 @@
 !typescript/**
 typescript/**/node_modules
 typescript/**/dist
+# pymol plugin
+!pymol_plugin
+!pymol_plugin/**
+pymol_plugin/**/__pycache__
 # python package
 !python
 !python/**
