@@ -30,6 +30,7 @@ option(FLEXAIDS_USE_AVX2    "Enable AVX2 SIMD acceleration"       ON)
 option(FLEXAIDS_USE_AVX512  "Enable AVX-512 SIMD acceleration"    OFF)
 option(FLEXAIDS_USE_OPENMP  "Enable OpenMP thread parallelism"    ON)
 option(FLEXAIDS_USE_EIGEN   "Enable Eigen3 vectorised linear algebra" ON)
+option(FLEXAIDS_USE_256_MATRIX "Enable 256×256 soft contact matrix" ON)
 option(BUILD_PYTHON_BINDINGS "Build Python bindings via pybind11" OFF)
 
 # ─── platform / SIMD helpers ───────────────────────────────────────────────
@@ -398,20 +399,28 @@ if(BUILD_PYTHON_BINDINGS AND pybind11_FOUND)
         LIB/hardware_dispatch.cpp
         LIB/hardware_detect.cpp
         LIB/encom.cpp
+        LIB/ShannonThermoStack/ShannonThermoStack.cpp
+        LIB/tencm.cpp
         # BindingMode requires full GA infrastructure
         # Partial exposure for now (thermodynamics only)
     )
+    # Conditionally add 256×256 matrix bindings
+    if(FLEXAIDS_USE_256_MATRIX)
+        target_sources(_core PRIVATE python/bindings/bindings_matrix.cpp)
+        target_compile_definitions(_core PRIVATE FLEXAIDS_USE_256_MATRIX)
+    endif()
     target_include_directories(_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
     )
     target_compile_definitions(_core PRIVATE VERSION_INFO=${PROJECT_VERSION})
-    
+
     # Link Eigen3 if available
     if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
         target_link_libraries(_core PRIVATE Eigen3::Eigen)
         target_compile_definitions(_core PRIVATE FLEXAIDS_HAS_EIGEN)
     endif()
-    
+
     message(STATUS "Python bindings enabled — build target: _core.so")
     message(STATUS "Install with: pip install -e python/")
 endif()
@@ -1062,7 +1071,39 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME GAValidationTests COMMAND test_ga_validation)
 
-    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_hardware_detect_dispatch, test_tencom_diff, test_ptm_attachment, test_gaboom, test_vcontacts, test_cleft_cavity, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect, test_binding_mode_statmech, test_binding_mode_advanced, test_ga_core, test_ga_validation")
+    # test_soft_contact_matrix — 256×256 energy matrix I/O, projection, lookup
+    if(FLEXAIDS_USE_256_MATRIX)
+        add_executable(test_soft_contact_matrix
+            tests/test_soft_contact_matrix.cpp
+            LIB/ShannonThermoStack/ShannonThermoStack.cpp
+            LIB/statmech.cpp
+            LIB/encom.cpp
+            LIB/tencm.cpp
+            LIB/hardware_dispatch.cpp
+            LIB/hardware_detect.cpp
+        )
+        target_include_directories(test_soft_contact_matrix PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+            ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
+        )
+        target_link_libraries(test_soft_contact_matrix PRIVATE GTest::gtest GTest::gtest_main)
+        target_compile_definitions(test_soft_contact_matrix PRIVATE FLEXAIDS_USE_256_MATRIX)
+        if(MSVC)
+            target_compile_options(test_soft_contact_matrix PRIVATE /O2)
+        else()
+            target_compile_options(test_soft_contact_matrix PRIVATE -O2)
+        endif()
+        if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+            target_link_libraries(test_soft_contact_matrix PRIVATE OpenMP::OpenMP_CXX)
+        endif()
+        if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+            target_link_libraries(test_soft_contact_matrix PRIVATE Eigen3::Eigen)
+            target_compile_definitions(test_soft_contact_matrix PRIVATE FLEXAIDS_HAS_EIGEN)
+        endif()
+        add_test(NAME SoftContactMatrixTests COMMAND test_soft_contact_matrix)
+    endif()
+
+    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_hardware_detect_dispatch, test_tencom_diff, test_ptm_attachment, test_gaboom, test_vcontacts, test_cleft_cavity, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect, test_binding_mode_statmech, test_binding_mode_advanced, test_ga_core, test_ga_validation, test_soft_contact_matrix")
 endif()
 
 # ─── Swift Bridge (macOS only) ────────────────────────────────────────────

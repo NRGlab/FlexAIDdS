@@ -24,21 +24,31 @@ _version_match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']',
                            _version_file.read_text(), re.MULTILINE)
 _version = _version_match.group(1) if _version_match else "0.0.0"
 
+_core_sources = [
+    "flexaidds/_core.cpp",
+    f"{_rel_lib}/statmech.cpp",
+    f"{_rel_lib}/encom.cpp",
+    f"{_rel_lib}/tencm.cpp",
+    f"{_rel_lib}/ShannonThermoStack/ShannonThermoStack.cpp",
+]
+_core_defs = []
+
+# 256×256 soft contact matrix bindings (added when file exists)
+_matrix_bindings = Path("bindings/bindings_matrix.cpp")
+if _matrix_bindings.exists():
+    _core_sources.append(str(_matrix_bindings))
+    _core_defs.append(("FLEXAIDS_USE_256_MATRIX", "1"))
+
 ext_modules = [
     Extension(
         "flexaidds._core",
-        sources=[
-            "flexaidds/_core.cpp",
-            f"{_rel_lib}/statmech.cpp",
-            f"{_rel_lib}/encom.cpp",
-            f"{_rel_lib}/tencm.cpp",
-            f"{_rel_lib}/ShannonThermoStack/ShannonThermoStack.cpp",
-        ],
+        sources=_core_sources,
         include_dirs=[
             str(LIB_DIR),
             str(LIB_DIR / "ShannonThermoStack"),
             pybind11.get_include(),
         ],
+        define_macros=_core_defs,
         language="c++",
         extra_compile_args=["-std=c++20", "-O3"],
     ),
