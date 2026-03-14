@@ -461,7 +461,8 @@ def validate_casf(matrix: np.ndarray,
     experimental = np.array(experimental)
 
     if len(predicted) < 3 or np.std(predicted) < 1e-12:
-        return {"pearson_r": 0.0, "rmse": float(np.std(experimental))}
+        return {"pearson_r": 0.0, "rmse": float(np.std(experimental)),
+                "n_complexes": len(complexes)}
 
     r, p_value = pearsonr(predicted, experimental) if HAS_SCIPY else (0.0, 1.0)
     rmse = float(np.sqrt(np.mean((predicted - experimental) ** 2)))
@@ -494,7 +495,8 @@ def validate_projection(matrix_256: np.ndarray,
     r_vals = ref_sub[tri]
 
     if np.std(p_vals) < 1e-12 or np.std(r_vals) < 1e-12:
-        return {"projection_r": 0.0}
+        return {"projection_r": 0.0, "projection_ntypes": n,
+                "projection_rmse": float(np.sqrt(np.mean((p_vals - r_vals) ** 2)))}
 
     if HAS_SCIPY:
         r, _ = pearsonr(p_vals, r_vals)

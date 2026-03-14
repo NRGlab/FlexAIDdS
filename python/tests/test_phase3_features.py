@@ -129,18 +129,20 @@ class TestEntropyHeatmapHelpers:
         assert hi[0] > 4.0  # x_max + padding
 
     def test_entropy_color_low(self):
-        """Low entropy should be blue."""
+        """Low entropy should be burgundy red."""
         from pymol_plugin.entropy_heatmap import _entropy_color
         r, g, b = _entropy_color(0.0)
-        assert b == 1.0
-        assert r == 0.0
+        assert r == pytest.approx(0.502)
+        assert g == pytest.approx(0.0)
+        assert b == pytest.approx(0.125)
 
     def test_entropy_color_high(self):
-        """High entropy should be red."""
+        """High entropy should be purple blue."""
         from pymol_plugin.entropy_heatmap import _entropy_color
         r, g, b = _entropy_color(1.0)
-        assert r == 1.0
-        assert b == 0.0
+        assert r == pytest.approx(0.294)
+        assert g == pytest.approx(0.0)
+        assert b == pytest.approx(0.510)
 
     def test_entropy_color_mid(self):
         """Mid entropy should be white."""

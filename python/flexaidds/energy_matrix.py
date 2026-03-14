@@ -199,7 +199,7 @@ class MatrixEntry:
 
         pts = self.density_points
         # Find bracketing interval
-        if relative_area <= pts[0].x:
+        if relative_area < pts[0].x:
             return 0.0  # no left-bound data
         for k in range(len(pts) - 1):
             if relative_area <= pts[k + 1].x:

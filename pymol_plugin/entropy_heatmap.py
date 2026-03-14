@@ -274,19 +274,21 @@ def _compute_spatial_entropy(
 
 
 def _entropy_color(entropy_norm: float) -> Tuple[float, float, float]:
-    """Map normalised entropy [0,1] to a blue-white-red colormap.
+    """Map normalised entropy [0,1] to a burgundy-white-purple colormap.
 
-    0.0 (low entropy / ordered) -> blue
+    0.0 (low entropy / ordered) -> burgundy red (0.502, 0.0, 0.125)
     0.5 (medium)                -> white
-    1.0 (high entropy / disordered) -> red
+    1.0 (high entropy / disordered) -> purple blue (0.294, 0.0, 0.510)
     """
     t = max(0.0, min(1.0, entropy_norm))
     if t < 0.5:
         s = t / 0.5
-        return (s, s, 1.0)  # blue -> white
+        # burgundy red → white
+        return (0.502 + s * (1.0 - 0.502), s, 0.125 + s * (1.0 - 0.125))
     else:
         s = (t - 0.5) / 0.5
-        return (1.0, 1.0 - s, 1.0 - s)  # white -> red
+        # white → purple blue
+        return (1.0 + s * (0.294 - 1.0), 1.0 - s, 1.0 + s * (0.510 - 1.0))
 
 
 def _render_pseudoatom(
@@ -412,4 +414,4 @@ def render_entropy_heatmap(
         f"Entropy heatmap rendered: {len(grid_points)} grid points "
         f"({n_high} high-entropy). Object: '{obj_name}'"
     )
-    print("  Blue = ordered (low entropy), Red = disordered (high entropy)")
+    print("  Burgundy = ordered (low entropy), Purple = disordered (high entropy)")
