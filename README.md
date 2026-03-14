@@ -276,7 +276,7 @@ NATURaL mode activates automatically when the system involves nucleotide ligands
 ./FlexAIDdS rnap_complex.pdb rna_fragment.mol2     # co-transcriptional
 ```
 
-The engine grows the receptor chain residue-by-residue at codon-dependent ribosome speed (Zhao 2011), identifies pause sites as co-translational folding windows, computes incremental CF + Shannon entropy at each growth step, and models TM helix insertion via the Sec61 translocon (Hessa 2007) when transmembrane segments are detected.
+NATURaL mode activates **automatically** when the system involves nucleotide ligands or nucleic acid receptors. When active, the engine grows the receptor chain residue-by-residue at codon-dependent ribosome speed (Zhao 2011), identifies pause sites as co-translational folding windows, computes incremental CF + Shannon entropy at each growth step, and models TM helix insertion via the Sec61 translocon (Hessa 2007) when transmembrane segments are detected.
 
 Supported organisms: *E. coli* K-12 and Human HEK293.
 
@@ -473,6 +473,23 @@ Tests marked `@requires_core` skip gracefully when the C++ extension is not buil
 
 ## Scientific Background
 
+### Scoring: Contact Function (CF) and NATURaL Potential
+
+FlexAID∆S uses two complementary scoring layers:
+
+**Primary: Voronoi Contact Function (CF)** — geometry-based shape complementarity via Voronoi tessellation of atom-atom contact surfaces (or 610-point sphere approximation in SPH mode).
+
+**Underlying: NATURaL interaction matrix** — a 2-term LJ+Coulomb potential parameterised over 40 SYBYL atom types that provides per-contact energy weights:
+
+```
+E = Σ [ε_ij·(r_ij⁻¹² − 2r_ij⁻⁶)] + Σ [(q_i·q_j)/(4πε₀·ε_r·r_ij)]
+    └── Lennard-Jones 12-6 ──┘     └──── Coulomb ────┘
+
+Distance-dependent dielectric: ε_r = 4r
+```
+
+The CF computes *how much* surface area two atoms share; the NATURaL matrix determines *how favourable* that contact is. An alternative 610-point sphere approximation (SPH) is available for faster screening.
+
 ### Statistical Mechanics Framework
 
 FlexAID∆S treats the GA conformational ensemble as a **canonical ensemble** (*N*, *V*, *T* fixed):
@@ -486,19 +503,6 @@ C_v = k_B·β²·(⟨E²⟩ − ⟨E⟩²)       (heat capacity)
 ```
 
 Implementation (`LIB/statmech.{h,cpp}`): log-sum-exp stability, Boltzmann weight normalization, thermodynamic integration, WHAM.
-
-### Scoring Function
-
-The Voronoi contact function (CF) computes atom-atom contact surface area via Voronoi tessellation. Contact energies are weighted by a 2-term LJ+Coulomb potential over 40 SYBYL atom types:
-
-```
-E = Σ [ε_ij·(r_ij⁻¹² − 2r_ij⁻⁶)] + Σ [(q_i·q_j)/(4πε₀·ε_r·r_ij)]
-    └── Lennard-Jones 12-6 ──┘     └──── Coulomb ────┘
-
-Distance-dependent dielectric: ε_r = 4r
-```
-
-An alternative 610-point sphere approximation (SPH) is available for faster screening.
 
 ---
 
@@ -632,7 +636,7 @@ The `--folded` flag sets `assume_folded = true`.
 
 ### Torsional ENCoM (tENCoM)
 
-Implements the torsional variant of the Elastic Network Contact Model (ENCoM; Frappier et al. 2015) using torsional degrees of freedom from Delarue & Sanejouand (2002) and Yang, Song & Cui (2009). Builds a spring network over Cα contacts, computes torsional normal modes via Jacobi diagonalisation, and samples Boltzmann-weighted backbone perturbations during the GA. Supports protein (Cα) and nucleic acid (C4') chains.
+Implements the torsional variant of the **Elastic Network Contact Model** (ENCoM; Frappier et al. 2015, DOI:10.1002/prot.24922) using torsional degrees of freedom from Delarue & Sanejouand (2002) and Yang, Song & Cui (2009). Builds a spring network over Cα contacts, computes torsional normal modes via Jacobi diagonalisation, and samples Boltzmann-weighted backbone perturbations during the GA. Supports protein (Cα) and nucleic acid (C4') chains.
 
 ### Statistical Mechanics Engine
 
