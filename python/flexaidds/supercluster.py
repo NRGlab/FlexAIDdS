@@ -102,11 +102,11 @@ class SuperCluster:
         indices = [i for i, e in enumerate(self._energies)
                    if abs(e - median) <= cutoff]
 
-        # If the filter is too aggressive, keep at least minPts poses
+        # If the filter is too aggressive, return the full ensemble
+        # (matches C++ behavior where empty extractSuperCluster falls back
+        # to the unfiltered set)
         if len(indices) < self._min_pts:
-            # Fall back to closest-to-median selection
-            by_dist = sorted(range(n), key=lambda i: abs(self._energies[i] - median))
-            indices = by_dist[:min(self._min_pts, n)]
+            indices = list(range(n))
 
         return indices
 

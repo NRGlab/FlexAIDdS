@@ -80,6 +80,22 @@ class TestSuperCluster:
         indices2 = sc.extract()
         assert indices1 == indices2
 
+    def test_aggressive_filter_returns_full_ensemble(self):
+        """When filter is too aggressive (<min_pts), fall back to full ensemble."""
+        # All very spread out — filter should be aggressive
+        energies = [-100.0, 0.0, 100.0]
+        sc = SuperCluster(energies, min_pts=4)  # min_pts > n
+        indices = sc.extract()
+        # Should return all indices (full ensemble fallback)
+        assert sorted(indices) == [0, 1, 2]
+
+    def test_reproducibility_two_instances(self):
+        """Two SuperCluster instances on identical data produce identical results."""
+        energies = [-10.0, -8.0, -12.0, -9.0, -11.0, 5.0, 6.0, 7.0]
+        sc1 = SuperCluster(energies, min_pts=3)
+        sc2 = SuperCluster(energies, min_pts=3)
+        assert sc1.extract() == sc2.extract()
+
 
 # ── Integration with run_shannon_thermo_stack ───────────────────────────────
 
