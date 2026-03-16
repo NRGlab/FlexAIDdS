@@ -1167,7 +1167,21 @@ if(BUILD_TESTING)
         add_test(NAME SoftContactMatrixTests COMMAND test_soft_contact_matrix)
     endif()
 
-    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_hardware_detect_dispatch, test_tencom_diff, test_ptm_attachment, test_gaboom, test_vcontacts, test_cleft_cavity, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect, test_binding_mode_statmech, test_binding_mode_advanced, test_ga_core, test_ga_validation, test_soft_contact_matrix")
+    # test_cube_grid — GridKey reproducibility, diagonal formula, neighbor probing
+    add_executable(test_cube_grid
+        tests/test_cube_grid.cpp
+        LIB/maps.cpp
+    )
+    target_include_directories(test_cube_grid PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_link_libraries(test_cube_grid PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_cube_grid PRIVATE /O2)
+    else()
+        target_compile_options(test_cube_grid PRIVATE -O2)
+    endif()
+    add_test(NAME CubeGridTests COMMAND test_cube_grid)
+
+    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_hardware_detect_dispatch, test_tencom_diff, test_ptm_attachment, test_gaboom, test_vcontacts, test_cleft_cavity, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect, test_binding_mode_statmech, test_binding_mode_advanced, test_ga_core, test_ga_validation, test_soft_contact_matrix, test_cube_grid")
 endif()
 
 # ─── Swift Bridge (macOS only) ────────────────────────────────────────────
