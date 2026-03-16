@@ -158,8 +158,8 @@ public actor ThermoReferee {
         // Step 1: Pre-compute all diagnostics on CPU (no LLM math)
         let context = preCompute(thermodynamics: thermodynamics, entropyScore: entropyScore)
 
-        // Step 2: Build token-efficient prompt
-        let prompt = buildRefereePrompt(context: context)
+        // Step 2: Build token-efficient prompt (may throw if budget exceeded)
+        let prompt = try buildRefereePrompt(context: context)
 
         // Step 3: Request structured verdict via @Generable guided generation
         let verdict = try await session.respond(to: prompt, generating: RefereeVerdict.self)
@@ -178,7 +178,7 @@ public actor ThermoReferee {
                 inputSummary: context.summaryString,
                 overallConfidence: verdict.overallTrustworthy ? .high : .low
             )
-            await AnalysisHistory.shared.record(key: key, analysis: analysis)
+            await AnalysisHistory.shared.record(key: key, analysis: analysis, source: "referee")
         }
 
         return verdict
@@ -288,9 +288,16 @@ public actor ThermoReferee {
         )
     }
 
+    /// Estimate token count for a string (word count × 1.3 heuristic for English + numbers).
+    private func estimateTokenCount(_ text: String) -> Int {
+        let wordCount = text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
+        return Int(ceil(Double(wordCount) * 1.3))
+    }
+
     /// Build a compact prompt that fits within the 4K token budget.
     /// Pre-computed flags are stated as facts; the model interprets, not computes.
-    private func buildRefereePrompt(context: PreComputedThermoContext) -> String {
+    /// Per-mode entropy is capped to top 5 modes by magnitude to stay within budget.
+    private func buildRefereePrompt(context: PreComputedThermoContext) throws -> String {
         var p = """
             Referee this docking result. Produce a RefereeVerdict with up to \(config.maxFindings) findings.
 
@@ -318,11 +325,38 @@ public actor ThermoReferee {
             p += "\nFLAG: Enthalpy-entropy compensation (F=\(String(format: "%.1f", context.freeEnergy)), S=\(String(format: "%.4f", context.entropy)))"
         }
 
+        // Per-mode entropy: cap to top 5 modes sorted by entropy magnitude
+        if !context.perModeEntropy.isEmpty {
+            let maxModesToShow = 5
+            let indexed = context.perModeEntropy.enumerated().sorted { $0.element > $1.element }
+            let top = indexed.prefix(maxModesToShow)
+            p += "\nTop modes by S:"
+            for (i, s) in top {
+                p += " M\(i)=\(String(format: "%.4f", s))"
+            }
+            if context.perModeEntropy.count > maxModesToShow {
+                p += " ...(\(context.perModeEntropy.count - maxModesToShow) omitted)"
+            }
+        }
+
         if let hrv = context.hrvSDNN {
             p += "\nHRV: \(String(format: "%.0f", hrv))ms"
         }
 
         p += "\nBackend: \(context.hardwareBackend)"
+
+        // Token budget guard: system instructions ~150 tokens + prompt must stay < 3800
+        let estimated = estimateTokenCount(p)
+        if estimated > 3000 {
+            // Emergency truncation: remove per-mode line
+            if let modeRange = p.range(of: "\nTop modes by S:.*", options: .regularExpression) {
+                p.removeSubrange(modeRange)
+            }
+        }
+        if estimateTokenCount(p) > 3800 {
+            throw RefereeError.contextWindowExceeded
+        }
+
         return p
     }
 
@@ -520,6 +554,45 @@ public struct RuleBasedReferee: Sendable {
             recommendedAction: action,
             confidence: confidence
         )
+    }
+}
+
+// MARK: - DockingRunner + Referee Convenience
+
+import HealthIntegration
+
+extension DockingRunner {
+    /// Run the GA, extract Shannon decomposition, and produce a referee verdict in one call.
+    ///
+    /// This is the simplest entry point for docking + quality assessment:
+    /// ```swift
+    /// let runner = DockingRunner(configPath: "config.inp", gaPath: "ga.inp")
+    /// let (result, verdict) = try await runner.runWithReferee()
+    /// if !verdict.overallTrustworthy {
+    ///     print("Warning: \(verdict.recommendedAction)")
+    /// }
+    /// ```
+    public func runWithReferee(
+        config: RefereeConfiguration = RefereeConfiguration()
+    ) async throws -> (DockingResult, CrossPlatformRefereeVerdict) {
+        let (result, decomposition) = try await runWithDecomposition()
+
+        var score = BindingEntropyScore(
+            shannonS: result.globalThermodynamics.entropy,
+            temperature: result.temperature,
+            bindingModeCount: result.bindingModes.count,
+            bestFreeEnergy: result.bindingModes.first?.freeEnergy ?? 0,
+            heatCapacity: result.globalThermodynamics.heatCapacity
+        )
+        score.shannonDecomposition = decomposition
+
+        let referee = RuleBasedReferee()
+        let verdict = referee.referee(
+            thermodynamics: result.globalThermodynamics,
+            entropyScore: score
+        )
+
+        return (result, verdict)
     }
 }
 

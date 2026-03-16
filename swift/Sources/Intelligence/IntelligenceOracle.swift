@@ -81,19 +81,37 @@ public struct OracleAnalysis: Sendable, Codable {
 // MARK: - Analysis History (trend tracking)
 
 /// Stores past analyses for trend detection across docking campaigns.
+/// Uses per-campaign-key FIFO (max 10 per key, 50 total) to prevent unbounded growth.
 public actor AnalysisHistory {
     public static let shared = AnalysisHistory()
 
-    private var entries: [(key: String, analysis: OracleAnalysis)] = []
-    private let maxEntries = 50
+    private var entries: [(key: String, source: String, analysis: OracleAnalysis)] = []
+    private let maxEntriesPerKey = 10
+    private let maxTotalEntries = 50
 
     private init() {}
 
     /// Record an analysis keyed by receptor-ligand pair.
-    public func record(key: String, analysis: OracleAnalysis) {
-        entries.append((key: key, analysis: analysis))
-        if entries.count > maxEntries {
-            entries.removeFirst()
+    /// - Parameters:
+    ///   - key: Campaign identifier (e.g., "5HT2A-psilocin")
+    ///   - analysis: The analysis result
+    ///   - source: Origin of the analysis ("text" for IntelligenceOracle, "referee" for ThermoReferee)
+    public func record(key: String, analysis: OracleAnalysis, source: String = "text") {
+        entries.append((key: key, source: source, analysis: analysis))
+
+        // Per-key FIFO: keep at most maxEntriesPerKey per campaign key
+        let keyEntries = entries.enumerated().filter { $0.element.key == key }
+        if keyEntries.count > maxEntriesPerKey {
+            let toRemove = keyEntries.count - maxEntriesPerKey
+            let indicesToRemove = keyEntries.prefix(toRemove).map(\.offset)
+            for index in indicesToRemove.reversed() {
+                entries.remove(at: index)
+            }
+        }
+
+        // Global FIFO: cap total entries
+        if entries.count > maxTotalEntries {
+            entries.removeFirst(entries.count - maxTotalEntries)
         }
     }
 
@@ -105,6 +123,11 @@ public actor AnalysisHistory {
     /// Get the most recent analysis for comparison.
     public func lastAnalysis(for key: String) -> OracleAnalysis? {
         entries.last(where: { $0.key == key })?.analysis
+    }
+
+    /// Get the most recent analysis from a specific source.
+    public func lastAnalysis(for key: String, source: String) -> OracleAnalysis? {
+        entries.last(where: { $0.key == key && $0.source == source })?.analysis
     }
 }
 
@@ -208,9 +231,9 @@ public actor IntelligenceOracle {
             overallConfidence: overall
         )
 
-        // Track for trend analysis
+        // Track for trend analysis (source: "text" for IntelligenceOracle text-based analysis)
         if let key = campaignKey {
-            await AnalysisHistory.shared.record(key: key, analysis: analysis)
+            await AnalysisHistory.shared.record(key: key, analysis: analysis, source: "text")
         }
 
         analysisCount += 1
@@ -356,11 +379,17 @@ public actor IntelligenceOracle {
                     prompt += "\n- FLAG: Sparse histogram (<50% bins occupied) — energy landscape poorly sampled"
                 }
 
-                // Per-mode entropy breakdown
+                // Per-mode entropy breakdown (capped to top 5 by magnitude for token budget)
                 if !decomp.perModeEntropy.isEmpty {
-                    prompt += "\n\nPer-Mode Entropy (kcal/mol/K):"
-                    for (i, modeS) in decomp.perModeEntropy.enumerated() {
+                    let maxModesToShow = 5
+                    let indexed = decomp.perModeEntropy.enumerated().sorted { $0.element > $1.element }
+                    let top = Array(indexed.prefix(maxModesToShow))
+                    prompt += "\n\nPer-Mode Entropy (top \(min(decomp.perModeEntropy.count, maxModesToShow)) of \(decomp.perModeEntropy.count), nats):"
+                    for (i, modeS) in top {
                         prompt += "\n  Mode \(i): S = \(String(format: "%.6f", modeS))"
+                    }
+                    if decomp.perModeEntropy.count > maxModesToShow {
+                        prompt += "\n  ... (\(decomp.perModeEntropy.count - maxModesToShow) modes omitted)"
                     }
 
                     // Flag entropy imbalance
@@ -371,10 +400,12 @@ public actor IntelligenceOracle {
                     }
                 }
 
-                // Dominant histogram bins
+                // Dominant histogram bins (capped to top 5)
                 if !decomp.dominantBins.isEmpty {
-                    prompt += "\n\nDominant Energy Bins:"
-                    for bin in decomp.dominantBins {
+                    let maxBinsToShow = 5
+                    let topBins = decomp.dominantBins.prefix(maxBinsToShow)
+                    prompt += "\n\nDominant Energy Bins (top \(topBins.count)):"
+                    for bin in topBins {
                         prompt += "\n  E = \(String(format: "%.2f", bin.center)) kcal/mol, p = \(String(format: "%.4f", bin.probability))"
                     }
                 }

@@ -107,7 +107,7 @@ public actor DockingRunner {
 
         // Query the ShannonThermoStack result from the C bridge
         var thermoResult = FXShannonThermoResult()
-        guard fx_ga_get_shannon_thermo(ctx, &thermoResult) else { return nil }
+        guard fx_ga_get_shannon_thermo(ctx, &thermoResult) != 0 else { return nil }
 
         // Extract per-mode entropy if available
         var perModeEntropy: [Double] = []
@@ -124,13 +124,21 @@ public actor DockingRunner {
         // Extract dominant histogram bins (top 5 most populated)
         var dominantBins: [(center: Double, probability: Double)] = []
         let binCount = Int(thermoResult.num_histogram_bins)
-        if binCount > 0, thermoResult.histogram_centers != nil, thermoResult.histogram_probs != nil {
+        if binCount > 0 {
             var binPairs: [(center: Double, probability: Double)] = []
-            for i in 0..<binCount {
-                let center = thermoResult.histogram_centers[i]
-                let prob = thermoResult.histogram_probs[i]
-                if prob > 0 {
-                    binPairs.append((center: center, probability: prob))
+            // Access fixed-size C arrays via withUnsafePointer
+            withUnsafePointer(to: thermoResult.histogram_centers) { centersPtr in
+                withUnsafePointer(to: thermoResult.histogram_probs) { probsPtr in
+                    centersPtr.withMemoryRebound(to: Double.self, capacity: binCount) { centers in
+                        probsPtr.withMemoryRebound(to: Double.self, capacity: binCount) { probs in
+                            for i in 0..<binCount {
+                                let prob = probs[i]
+                                if prob > 0 {
+                                    binPairs.append((center: centers[i], probability: prob))
+                                }
+                            }
+                        }
+                    }
                 }
             }
             // Sort by probability descending, take top 5
@@ -139,11 +147,15 @@ public actor DockingRunner {
         }
 
         // Detect convergence from entropy history
-        let isConverged = thermoResult.is_converged
+        let isConverged = thermoResult.is_converged != 0
         let convergenceRate = thermoResult.convergence_rate
 
         // Determine hardware backend string
-        let backend = String(cString: thermoResult.hardware_backend)
+        let backend = withUnsafePointer(to: thermoResult.hardware_backend) { ptr in
+            ptr.withMemoryRebound(to: CChar.self, capacity: 32) { cstr in
+                String(cString: cstr)
+            }
+        }
 
         let occupiedBins = Int(thermoResult.occupied_bins)
         let totalBins = Int(thermoResult.total_bins)
@@ -160,6 +172,27 @@ public actor DockingRunner {
             perModeEntropy: perModeEntropy,
             dominantBins: dominantBins
         )
+    }
+
+    // MARK: - Convenience: Run + Extract Decomposition
+
+    /// Run the GA and extract the Shannon entropy decomposition in one call.
+    ///
+    /// Chains: run() → extractShannonDecomposition().
+    /// The caller can then build a `BindingEntropyScore` and pass it to
+    /// `RuleBasedReferee` or `ThermoReferee`.
+    ///
+    /// - Returns: Tuple of the docking result and optional Shannon decomposition
+    public func runWithDecomposition() async throws -> (DockingResult, ShannonEntropyDecomposition?) {
+        let result = try await run()
+        let decomposition = extractShannonDecomposition()
+        return (result, decomposition)
+    }
+
+    /// Access the raw GA context ref for Tool callbacks (ThermoReferee).
+    /// Only valid while this actor is alive and run() has completed.
+    public var gaContextRef: FXGAContextRef? {
+        contextRef
     }
 
     // MARK: - Private Helpers
