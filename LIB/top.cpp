@@ -7,6 +7,7 @@
 #include "SdfReader.h"
 #include "CleftDetector.h"
 
+#include <cstring>
 #include <string>
 #include <cstring>
 
@@ -677,7 +678,11 @@ int main(int argc, char **argv){
 		sprintf(tmpremark,"REMARK [%8.3f]\n",FA->opt_par[i]);
 		strcat(remark,tmpremark);
 	}
-	sprintf(tmpremark,"REMARK inputs: %s & %s",dockinp,gainp);
+	if (legacy_mode) {
+		sprintf(tmpremark,"REMARK inputs: %s & %s",dockinp,gainp);
+	} else {
+		sprintf(tmpremark,"REMARK inputs: direct mode");
+	}
 	strcat(remark,tmpremark);
 	
 	if (FA->htpmode == false) {write_pdb(FA,atoms,residue,tmp_end_strfile,remark);}
