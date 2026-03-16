@@ -80,21 +80,37 @@ statmech::StatMechEngine BindingPopulation::get_global_ensemble() const
 {
 	statmech::StatMechEngine global_engine(static_cast<double>(this->Temperature));
 
+	// Phase 1: count total samples for pre-allocation
+	std::size_t total_poses = 0;
+	for (const auto& mode : this->BindingModes)
+		total_poses += mode.Poses.size();
+
+	// Phase 2: collect energy/weight pairs
+	// Pre-collect to enable potential future parallelisation without
+	// thread-safety issues on add_sample().
+	std::vector<double> all_energies;
+	std::vector<double> all_weights;
+	all_energies.reserve(total_poses);
+	all_weights.reserve(total_poses);
+
 	for (const auto& mode : this->BindingModes)
 	{
 		const std::vector<double> weights = mode.get_boltzmann_weights();
 		const std::vector<Pose>& poses = mode.Poses;
 
 		if (weights.size() != poses.size())
-		{
 			continue;
-		}
 
 		for (std::size_t i = 0; i < poses.size(); ++i)
 		{
-			global_engine.add_sample(poses[i].CF, weights[i]);
+			all_energies.push_back(poses[i].CF);
+			all_weights.push_back(weights[i]);
 		}
 	}
+
+	// Phase 3: batch add to engine (sequential, but faster due to contiguous access)
+	for (std::size_t i = 0; i < all_energies.size(); ++i)
+		global_engine.add_sample(all_energies[i], all_weights[i]);
 
 	return global_engine;
 }
@@ -109,6 +125,8 @@ BindingMode::BindingMode(BindingPopulation* pop)
 	: Population(pop),
 	  engine_(pop ? static_cast<double>(pop->Temperature) : 298.15),
 	  thermo_cache_valid_(false),
+	  vib_correction_cache_(0.0),
+	  vib_cache_valid_(false),
 	  energy(0.0)
 {
 }
@@ -118,7 +136,8 @@ BindingMode::BindingMode(BindingPopulation* pop)
 void BindingMode::add_Pose(Pose& pose)
 {
 	this->Poses.push_back(pose);
-	this->thermo_cache_valid_ = false;  // Invalidate cache on modification
+	this->thermo_cache_valid_ = false;
+	this->vib_cache_valid_ = false;
 }
 
 
@@ -242,6 +261,7 @@ void BindingMode::clear_Poses()
 	this->Poses.clear();
 	this->engine_.clear();
 	this->thermo_cache_valid_ = false;
+	this->vib_cache_valid_ = false;
 }
 
 
@@ -479,6 +499,9 @@ double BindingMode::compute_vibrational_correction() const
 {
 	if (!this->Population->FA->normal_modes) return 0.0;
 
+	// Return cached value if still valid
+	if (this->vib_cache_valid_) return this->vib_correction_cache_;
+
 	std::vector<encom::NormalMode> modes;
 	int mode_count = this->Population->FA->normal_modes;
 	const atom* atoms = this->Population->atoms;
@@ -496,10 +519,16 @@ double BindingMode::compute_vibrational_correction() const
 		}
 	}
 
-	if (modes.empty()) return 0.0;
+	if (modes.empty()) {
+		this->vib_correction_cache_ = 0.0;
+		this->vib_cache_valid_ = true;
+		return 0.0;
+	}
 
 	double T = static_cast<double>(this->Population->Temperature);
 	encom::VibrationalEntropy vs = encom::ENCoMEngine::compute_vibrational_entropy(modes, T);
 
-	return -T * vs.S_vib_kcal_mol_K;
+	this->vib_correction_cache_ = -T * vs.S_vib_kcal_mol_K;
+	this->vib_cache_valid_ = true;
+	return this->vib_correction_cache_;
 }

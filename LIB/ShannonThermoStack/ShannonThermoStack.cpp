@@ -133,8 +133,9 @@ double compute_shannon_entropy(const std::vector<double>& values, int num_bins) 
     if (values.empty()) return 0.0;
     if (num_bins <= 0)  num_bins = DEFAULT_HIST_BINS;
 
-    double min_v = *std::min_element(values.begin(), values.end());
-    double max_v = *std::max_element(values.begin(), values.end());
+    auto [it_min, it_max] = std::minmax_element(values.begin(), values.end());
+    double min_v = *it_min;
+    double max_v = *it_max;
     if (max_v - min_v < 1e-12) return 0.0;
     double bin_width = (max_v - min_v) / num_bins + 1e-10;
     double inv_bw    = 1.0 / bin_width;
@@ -172,19 +173,41 @@ if (n > GPU_DISPATCH_THRESHOLD) {
     {
 #  ifdef _OPENMP
         int n_threads = omp_get_max_threads();
+#    ifdef FLEXAIDS_HAS_EIGEN
+        // Flat Eigen matrix for cache-friendly thread-local histograms
+        Eigen::MatrixXi t_bins = Eigen::MatrixXi::Zero(n_threads, num_bins);
+        #pragma omp parallel
+        {
+            int tid    = omp_get_thread_num();
+            int chunk  = (n + n_threads - 1) / n_threads;
+            int start  = tid * chunk;
+            int end_i  = std::min(start + chunk, n);
+            if (start < end_i) {
+                // histogram_avx512 needs std::vector<int>& — use row view
+                std::vector<int> priv(num_bins, 0);
+                histogram_avx512(values.data() + start, end_i - start,
+                                 min_v, inv_bw, num_bins, priv);
+                for (int b = 0; b < num_bins; ++b)
+                    t_bins(tid, b) = priv[b];
+            }
+        }
+        Eigen::VectorXi col_sums = t_bins.colwise().sum();
+        for (int b = 0; b < num_bins; ++b) bins[b] = col_sums(b);
+#    else
         std::vector<std::vector<int>> t_bins(n_threads, std::vector<int>(num_bins, 0));
         #pragma omp parallel
         {
             int tid    = omp_get_thread_num();
             int chunk  = (n + n_threads - 1) / n_threads;
             int start  = tid * chunk;
-            int end    = std::min(start + chunk, n);
-            if (start < end)
-                histogram_avx512(values.data() + start, end - start,
+            int end_i  = std::min(start + chunk, n);
+            if (start < end_i)
+                histogram_avx512(values.data() + start, end_i - start,
                                  min_v, inv_bw, num_bins, t_bins[tid]);
         }
         for (auto& tb : t_bins)
             for (int b = 0; b < num_bins; ++b) bins[b] += tb[b];
+#    endif
 #  else
         histogram_avx512(values.data(), n, min_v, inv_bw, num_bins, bins);
 #  endif
@@ -194,6 +217,17 @@ if (n > GPU_DISPATCH_THRESHOLD) {
 #elif defined(_OPENMP)
     {
         int n_threads = omp_get_max_threads();
+#  ifdef FLEXAIDS_HAS_EIGEN
+        Eigen::MatrixXi t_bins = Eigen::MatrixXi::Zero(n_threads, num_bins);
+        #pragma omp parallel for schedule(static)
+        for (int i = 0; i < n; ++i) {
+            int tid = omp_get_thread_num();
+            int b   = static_cast<int>((values[i] - min_v) * inv_bw);
+            t_bins(tid, std::min(std::max(b, 0), num_bins - 1))++;
+        }
+        Eigen::VectorXi col_sums = t_bins.colwise().sum();
+        for (int b = 0; b < num_bins; ++b) bins[b] = col_sums(b);
+#  else
         std::vector<std::vector<int>> t_bins(n_threads, std::vector<int>(num_bins, 0));
         #pragma omp parallel for schedule(static)
         for (int i = 0; i < n; ++i) {
@@ -203,6 +237,7 @@ if (n > GPU_DISPATCH_THRESHOLD) {
         }
         for (auto& tb : t_bins)
             for (int b = 0; b < num_bins; ++b) bins[b] += tb[b];
+#  endif
     }
 
 // ── 5. Scalar ─────────────────────────────────────────────────────────────────

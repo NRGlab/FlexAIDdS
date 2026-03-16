@@ -279,9 +279,10 @@ std::vector<WHAMBin> StatMechEngine::wham(
     const std::size_t N = energies.size();
     double beta = 1.0 / (kB_kcal * temperature);
 
-    // Find coordinate range
-    double cmin = *std::min_element(coordinates.begin(), coordinates.end());
-    double cmax = *std::max_element(coordinates.begin(), coordinates.end());
+    // Find coordinate range (single pass)
+    auto [cmin_it, cmax_it] = std::minmax_element(coordinates.begin(), coordinates.end());
+    double cmin = *cmin_it;
+    double cmax = *cmax_it;
     double bin_w = (cmax - cmin) / n_bins;
     if (bin_w <= 0.0) bin_w = 1.0;
 
@@ -307,6 +308,28 @@ std::vector<WHAMBin> StatMechEngine::wham(
     std::vector<double> f_new(static_cast<std::size_t>(n_bins), 0.0);
 
     for (int iter = 0; iter < max_iter; ++iter) {
+#ifdef FLEXAIDS_HAS_EIGEN
+        // Eigen vectorised WHAM self-consistency update
+        Eigen::Map<const Eigen::ArrayXd> rc(raw_count.data(), n_bins);
+        Eigen::Map<const Eigen::ArrayXd> bs(boltz_sum.data(), n_bins);
+        Eigen::Map<Eigen::ArrayXd> fn(f_new.data(), n_bins);
+        Eigen::Map<Eigen::ArrayXd> fo(f_old.data(), n_bins);
+
+        // F_b = -kT * ln(boltz_sum_b / raw_count_b) where raw_count_b > 0
+        auto occupied = (rc > 0.0);
+        Eigen::ArrayXd safe_rc = occupied.select(rc, Eigen::ArrayXd::Ones(n_bins));
+        fn = occupied.select(
+            -(kB_kcal * temperature) * (bs / safe_rc).log(),
+            Eigen::ArrayXd::Zero(n_bins));
+
+        // Shift so minimum = 0
+        fn -= fn.minCoeff();
+
+        // Check convergence
+        double maxdiff = (fn - fo).abs().maxCoeff();
+        fo = fn;
+        if (maxdiff < tolerance) break;
+#else
         for (int b = 0; b < n_bins; ++b) {
             if (raw_count[static_cast<std::size_t>(b)] > 0.0) {
                 f_new[static_cast<std::size_t>(b)] = -(kB_kcal * temperature) *
@@ -328,6 +351,7 @@ std::vector<WHAMBin> StatMechEngine::wham(
                          f_old[static_cast<std::size_t>(b)]));
         f_old = f_new;
         if (maxdiff < tolerance) break;
+#endif
     }
 
     // Build output

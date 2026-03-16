@@ -90,6 +90,8 @@ class BindingMode // aggregation of poses (Cluster)
 		// ═══ STATMECH ENGINE (replaces manual Boltzmann summation) ═══
 		mutable statmech::StatMechEngine engine_;  // mutable: allows lazy evaluation in const methods
 		mutable bool thermo_cache_valid_;          // track if engine_ matches current Poses
+		mutable double vib_correction_cache_;      // cached vibrational correction value
+		mutable bool   vib_cache_valid_;           // track if vib cache matches current state
 
 		void	set_energy();                         // updates cached energy value
 		void	rebuild_engine() const;               // populates engine_ from Poses (called on-demand)
