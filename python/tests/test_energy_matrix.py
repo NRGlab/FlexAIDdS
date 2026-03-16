@@ -172,9 +172,10 @@ class TestMatrixEntry:
                             ])
         # Below first point
         assert entry.evaluate(0.05) == 0.0
-        # At first point
-        assert entry.evaluate(0.1) == pytest.approx(-2.0, abs=1e-6)
-        # Midpoint between first two
+        # At first point: C++ get_yval uses <= for left-bound check,
+        # so exact boundary returns 0.0 (same as "below")
+        assert entry.evaluate(0.1) == 0.0
+        # Just past first point: enters first interval
         assert entry.evaluate(0.2) == pytest.approx(-1.0, abs=1e-6)
         # At second point
         assert entry.evaluate(0.3) == pytest.approx(0.0, abs=1e-6)
@@ -361,3 +362,300 @@ class TestUtilities:
         r = repr(sample_256_matrix)
         assert "256" in r
         assert "symmetric" in r
+
+
+# ── ContactTable tests ──────────────────────────────────────────────────────
+
+from flexaidds.energy_matrix import (
+    ContactTable,
+    KnowledgeBasedTrainer,
+    DockingBenchmarkCase,
+    EnergyMatrixOptimizer,
+    OptimizationResult,
+)
+
+
+class TestContactTable:
+    def test_save_load_roundtrip(self, tmp_dir):
+        counts = np.array([[10, 5], [5, 8]], dtype=np.int64)
+        totals = np.array([100, 80], dtype=np.int64)
+        table = ContactTable(
+            ntypes=2, counts=counts, type_totals=totals,
+            n_structures=3, distance_cutoff=6.0,
+        )
+        path = os.path.join(tmp_dir, "contacts.json")
+        table.save(path)
+        loaded = ContactTable.load(path)
+        assert loaded.ntypes == 2
+        assert loaded.n_structures == 3
+        assert loaded.distance_cutoff == 6.0
+        np.testing.assert_array_equal(loaded.counts, counts)
+        np.testing.assert_array_equal(loaded.type_totals, totals)
+
+    def test_merge_tables(self):
+        t1 = ContactTable(
+            ntypes=3,
+            counts=np.ones((3, 3), dtype=np.int64),
+            type_totals=np.array([10, 20, 30], dtype=np.int64),
+            n_structures=1,
+        )
+        t2 = ContactTable(
+            ntypes=3,
+            counts=np.ones((3, 3), dtype=np.int64) * 2,
+            type_totals=np.array([5, 10, 15], dtype=np.int64),
+            n_structures=2,
+        )
+        trainer = KnowledgeBasedTrainer(ntypes=3)
+        trainer.add_contact_table(t1)
+        trainer.add_contact_table(t2)
+        result = trainer.get_contact_table()
+        np.testing.assert_array_equal(result.counts, t1.counts + t2.counts)
+        np.testing.assert_array_equal(result.type_totals, t1.type_totals + t2.type_totals)
+        assert result.n_structures == 3
+
+
+# ── KnowledgeBasedTrainer tests ─────────────────────────────────────────────
+
+class TestKnowledgeBasedTrainer:
+    def test_single_structure_contacts(self):
+        """Adding one structure accumulates correct contact counts."""
+        trainer = KnowledgeBasedTrainer(ntypes=3, distance_cutoff=5.0)
+        # 4 atoms: types 0, 1, 2, 0
+        # Distances: 0-1=1.0, 0-2=3.0, 0-3=2.0, 1-2=2.0, 1-3=2.24, 2-3=2.24
+        coords = np.array([
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+        ])
+        types = np.array([0, 1, 2, 0])
+        trainer.add_structure(coords, types)
+        table = trainer.get_contact_table()
+        assert table.n_structures == 1
+        # All distances < 5.0, so all 6 pairs are contacts
+        assert np.sum(table.counts) > 0
+        # type 0 appears twice
+        assert table.type_totals[0] == 2
+        assert table.type_totals[1] == 1
+        assert table.type_totals[2] == 1
+
+    def test_pseudocount_prevents_inf(self):
+        """Zero-count pairs produce finite energies thanks to pseudocount."""
+        trainer = KnowledgeBasedTrainer(ntypes=4, pseudocount=1)
+        # Only contacts between types 0 and 1
+        coords = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        types = np.array([0, 1])
+        trainer.add_structure(coords, types)
+        matrix = trainer.derive_potential()
+        # All entries should be finite
+        assert np.all(np.isfinite(matrix.matrix))
+
+    def test_high_frequency_negative_energy(self):
+        """Frequently-observed contacts should have negative (favorable) energy."""
+        trainer = KnowledgeBasedTrainer(ntypes=3, distance_cutoff=3.0,
+                                         pseudocount=1)
+        # Deterministic contacts: types 0 and 1 close, type 2 far away
+        for _ in range(50):
+            coords = np.array([
+                [0.0, 0.0, 0.0],   # type 0
+                [1.0, 0.0, 0.0],   # type 1 — within 3Å of type 0
+                [100.0, 0.0, 0.0], # type 2 — far from both
+            ])
+            types = np.array([0, 1, 2])
+            trainer.add_structure(coords, types)
+
+        matrix = trainer.derive_potential()
+        # 0-1 (many contacts) should be more negative than 0-2 (no contacts)
+        assert matrix.matrix[0, 1] < matrix.matrix[0, 2]
+
+    def test_inter_chain_filtering(self):
+        """With chain_mask, only inter-chain contacts are counted."""
+        trainer = KnowledgeBasedTrainer(ntypes=2, distance_cutoff=5.0)
+        coords = np.array([
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],  # same chain as atom 0
+            [2.0, 0.0, 0.0],  # different chain
+        ])
+        types = np.array([0, 0, 1])
+        chain_mask = np.array([0, 0, 1])  # atoms 0,1 in chain 0; atom 2 in chain 1
+        trainer.add_structure(coords, types, chain_mask=chain_mask)
+        table = trainer.get_contact_table()
+        # Intra-chain (0-0) pair should NOT be counted
+        # Only inter-chain contacts: 0-2 and 1-2
+        assert table.counts[0, 0] == 0  # no intra-chain 0-0 contacts
+        assert table.counts[0, 1] > 0   # inter-chain 0-1 contacts exist
+
+    def test_derived_matrix_is_symmetric(self):
+        """Output matrix should be symmetric."""
+        trainer = KnowledgeBasedTrainer(ntypes=4)
+        rng = np.random.RandomState(123)
+        coords = rng.randn(10, 3)
+        types = rng.randint(0, 4, size=10)
+        trainer.add_structure(coords, types)
+        matrix = trainer.derive_potential()
+        assert matrix.is_symmetric
+
+    def test_parse_pdb_contacts(self, tmp_dir):
+        """Test PDB parsing convenience method."""
+        pdb_content = (
+            "ATOM      1  N   ALA A   1       1.000   2.000   3.000  1.00  0.00           N\n"
+            "ATOM      2  CA  ALA A   1       2.000   3.000   4.000  1.00  0.00           C\n"
+            "HETATM    3  C1  LIG B   1       5.000   6.000   7.000  1.00  0.00           C\n"
+            "END\n"
+        )
+        pdb_path = os.path.join(tmp_dir, "test.pdb")
+        with open(pdb_path, "w") as fh:
+            fh.write(pdb_content)
+
+        type_mapping = {"ALA:N": 0, "ALA:CA": 1, "LIG:C1": 2}
+        coords, atom_types, chain_mask = KnowledgeBasedTrainer.parse_pdb_contacts(
+            pdb_path, type_mapping)
+        assert coords.shape == (3, 3)
+        assert list(atom_types) == [0, 1, 2]
+        # Chains A and B → two distinct chain IDs
+        assert len(set(chain_mask.tolist())) == 2
+
+
+# ── EnergyMatrixOptimizer tests ─────────────────────────────────────────────
+
+class TestEnergyMatrixOptimizer:
+    def test_vector_matrix_roundtrip(self):
+        """Flattening and reconstructing preserves values."""
+        mat = EnergyMatrix(4, np.random.RandomState(42).randn(4, 4))
+        mat.symmetrise()
+
+        # Create a minimal optimizer just for the roundtrip test
+        opt = EnergyMatrixOptimizer.__new__(EnergyMatrixOptimizer)
+        opt._reference = mat
+
+        vec = opt._matrix_to_vector(mat)
+        assert len(vec) == 4 * 5 // 2  # upper triangle = 10
+
+        recovered = opt._vector_to_matrix(vec)
+        np.testing.assert_allclose(recovered.matrix, mat.matrix, atol=1e-12)
+
+    def test_auc_perfect_separation(self):
+        """AUC is 1.0 when all actives score lower than all decoys."""
+        auc = EnergyMatrixOptimizer._compute_auc(
+            [-5.0, -4.0, -3.0],  # actives (lower)
+            [1.0, 2.0, 3.0],     # decoys (higher)
+        )
+        assert auc == pytest.approx(1.0)
+
+    def test_auc_inverted(self):
+        """AUC is 0.0 when all actives score higher than all decoys."""
+        auc = EnergyMatrixOptimizer._compute_auc(
+            [5.0, 6.0, 7.0],     # actives (higher = bad)
+            [-1.0, -2.0, -3.0],  # decoys (lower)
+        )
+        assert auc == pytest.approx(0.0)
+
+    def test_auc_random(self):
+        """AUC is ~0.5 for interleaved scores."""
+        auc = EnergyMatrixOptimizer._compute_auc(
+            [-3.0, -1.0, 1.0, 3.0],   # actives
+            [-2.0, 0.0, 2.0, 4.0],    # decoys
+        )
+        assert 0.3 < auc < 0.7
+
+    def test_auc_empty(self):
+        """AUC is 0.5 when either list is empty."""
+        assert EnergyMatrixOptimizer._compute_auc([], [1.0]) == 0.5
+        assert EnergyMatrixOptimizer._compute_auc([1.0], []) == 0.5
+
+    def test_load_benchmark_directory(self, tmp_dir):
+        """load_benchmark finds receptor, actives, and decoys."""
+        bdir = os.path.join(tmp_dir, "bench")
+        os.makedirs(os.path.join(bdir, "actives"))
+        os.makedirs(os.path.join(bdir, "decoys"))
+
+        # Create receptor
+        with open(os.path.join(bdir, "receptor.pdb"), "w") as fh:
+            fh.write("ATOM      1  CA  ALA A   1       0.0   0.0   0.0  1.00  0.00\nEND\n")
+
+        # Create actives
+        for i in range(3):
+            with open(os.path.join(bdir, "actives", f"active_{i}.mol2"), "w") as fh:
+                fh.write("@<TRIPOS>MOLECULE\ntest\n")
+
+        # Create decoys
+        for i in range(5):
+            with open(os.path.join(bdir, "decoys", f"decoy_{i}.mol2"), "w") as fh:
+                fh.write("@<TRIPOS>MOLECULE\ntest\n")
+
+        cases = EnergyMatrixOptimizer.load_benchmark(bdir)
+        assert len(cases) == 8
+        actives = [c for c in cases if c.is_active]
+        decoys = [c for c in cases if not c.is_active]
+        assert len(actives) == 3
+        assert len(decoys) == 5
+
+    def test_density_function_matrix_raises(self):
+        """Optimizer refuses density-function matrices."""
+        mat = EnergyMatrix(2, np.zeros((2, 2)))
+        mat.entries[(0, 1)] = MatrixEntry(
+            type1=0, type2=1, is_scalar=False,
+            density_points=[DensityPoint(0.1, 1.0), DensityPoint(0.5, 2.0)],
+        )
+        with pytest.raises(ValueError, match="all-scalar"):
+            EnergyMatrixOptimizer(
+                reference_matrix=mat,
+                benchmark=[],
+            )
+
+
+# ── CLI tests ───────────────────────────────────────────────────────────────
+
+class TestCLI:
+    def test_build_parser(self):
+        from flexaidds.energy_matrix_cli import build_parser
+        parser = build_parser()
+        # Should accept 'train' subcommand
+        args = parser.parse_args(["train", "--contacts", "c.json", "-o", "out.dat"])
+        assert args.command == "train"
+        assert args.contacts == "c.json"
+
+    def test_convert_subcommand(self, sample_10type_dat, tmp_dir):
+        from flexaidds.energy_matrix_cli import _cmd_convert
+        import argparse
+        out = os.path.join(tmp_dir, "converted.json")
+        args = argparse.Namespace(
+            input=sample_10type_dat,
+            output=out,
+            format="json",
+        )
+        ret = _cmd_convert(args)
+        assert ret == 0
+        import json
+        data = json.loads(open(out).read())
+        assert data["ntypes"] == 10
+        assert len(data["matrix"]) == 10
+
+    def test_train_subcommand(self, tmp_dir):
+        from flexaidds.energy_matrix_cli import _cmd_train
+        import argparse
+
+        # Create a contact table
+        table = ContactTable(
+            ntypes=3,
+            counts=np.array([[5, 10, 2], [10, 3, 7], [2, 7, 4]], dtype=np.int64),
+            type_totals=np.array([50, 40, 30], dtype=np.int64),
+            n_structures=5,
+        )
+        contacts_path = os.path.join(tmp_dir, "contacts.json")
+        table.save(contacts_path)
+
+        out_path = os.path.join(tmp_dir, "trained.dat")
+        args = argparse.Namespace(
+            contacts=contacts_path,
+            output=out_path,
+            temperature=300.0,
+            pseudocount=1,
+            no_labels=False,
+        )
+        ret = _cmd_train(args)
+        assert ret == 0
+        # Verify output is valid
+        mat = EnergyMatrix.from_dat_file(out_path)
+        assert mat.ntypes == 3
+        assert mat.is_symmetric

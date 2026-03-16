@@ -52,6 +52,11 @@ from .energy_matrix import (
     write_dat_file,
     SYBYL_TYPE_NAMES,
     SYBYL_RADII,
+    ContactTable,
+    KnowledgeBasedTrainer,
+    DockingBenchmarkCase,
+    OptimizationResult,
+    EnergyMatrixOptimizer,
 )
 
 
@@ -185,6 +190,12 @@ __all__ = [
     "write_dat_file",
     "SYBYL_TYPE_NAMES",
     "SYBYL_RADII",
+    # Energy matrix training and optimization
+    "ContactTable",
+    "KnowledgeBasedTrainer",
+    "DockingBenchmarkCase",
+    "OptimizationResult",
+    "EnergyMatrixOptimizer",
 ]
 
 # C++ core extras (only available when compiled)
