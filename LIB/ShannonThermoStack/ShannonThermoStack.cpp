@@ -35,7 +35,6 @@ static bool           s_cuda_ready = false;
 #include <algorithm>
 #include <cmath>
 #include <numeric>
-#include <random>
 #include <vector>
 
 namespace shannon_thermo {
@@ -346,8 +345,6 @@ FullThermoResult run_shannon_thermo_stack(
     double                          base_deltaG,
     double                          temperature_K)
 {
-    ShannonEnergyMatrix::instance().initialise();
-
     auto weights = stat_engine.boltzmann_weights();
     std::vector<double> log_weights;
     log_weights.reserve(weights.size());
