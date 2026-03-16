@@ -22,18 +22,19 @@ inline constexpr int   SHANNON_BINS      = 256;    // mega-cluster discretisatio
 inline constexpr double kB_kcal          = 0.001987206; // kcal mol⁻¹ K⁻¹
 inline constexpr double TEMPERATURE_K    = 298.15;
 inline constexpr int   DEFAULT_HIST_BINS = 20;
+inline constexpr int   GPU_DISPATCH_THRESHOLD = 100000; // only use GPU for N > 100K
 
 // ─── result struct ───────────────────────────────────────────────────────────
 struct FullThermoResult {
     double deltaG;              // total free energy (kcal/mol)
-    double shannonEntropy;      // dimensionless bits (conformational)
+    double shannonEntropy;      // dimensionless nats (conformational, natural log)
     double torsionalVibEntropy; // kcal/mol·K (from ENCoM modes)
     double entropyContribution; // -T*S term (kcal/mol)
     std::string report;
 };
 
 // ─── 256×256 precomputed Shannon energy lookup ───────────────────────────────
-// E[i][j] = -kT * p_i * log2(p_j)
+// E[i][j] = -kT * p_i * ln(p_j)
 // Generated at startup with seed 42 + Gaussian perturbation of uniform priors.
 class ShannonEnergyMatrix {
 public:
@@ -97,5 +98,12 @@ FullThermoResult run_shannon_thermo_stack(
     const tencm::TorsionalENM&      tencm_model,
     double                          base_deltaG,
     double                          temperature_K = TEMPERATURE_K);
+
+// ─── entropy plateau detection ──────────────────────────────────────────────
+// Returns true if the last `window` entries in `history` all have relative
+// change < `rel_threshold` from the first entry in the window.
+// Used for GA early-termination when Shannon entropy stabilises.
+bool detect_entropy_plateau(const std::vector<double>& history,
+                            int window, double rel_threshold);
 
 } // namespace shannon_thermo
