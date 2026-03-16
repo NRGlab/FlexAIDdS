@@ -351,6 +351,9 @@ python -m flexaidds /path/to/results/ --csv out.csv  # CSV export
 | `thermodynamics` | `StatMechEngine`, `Thermodynamics`, Boltzmann LUT |
 | `encom` | `ENCoMEngine`, `NormalMode`, `VibrationalEntropy` |
 | `tencm` | `TorsionalENM`, `compute_shannon_entropy`, `run_shannon_thermo_stack` |
+| `energy_matrix` | `EnergyMatrix` I/O, 256-type projection, legacy `.dat` format |
+| `train_256x256` | Offline training pipeline for 256×256 soft contact matrix |
+| `tencom_results` | tENCoM output parser (PDB REMARK + JSON) |
 | `results` | `load_results()` file parser |
 | `models` | `PoseResult`, `BindingModeResult`, `DockingResult` data classes |
 | `io` | PDB/MOL2/config I/O utilities |
@@ -364,12 +367,19 @@ python -m flexaidds /path/to/results/ --csv out.csv  # CSV export
 | Command | Description |
 |:--------|:------------|
 | `flexaids_load <dir> [temp]` | Load results from output directory |
+| `flexaids_load_results <dir>` | Load full docking results |
 | `flexaids_show_ensemble <mode>` | Display all poses in a binding mode |
-| `flexaids_color_boltzmann <mode>` | Color by Boltzmann weight |
-| `flexaids_thermo <mode>` | Print thermodynamic properties |
 | `flexaids_show_mode <mode>` | Show a single binding mode |
+| `flexaids_color_boltzmann <mode>` | Color by Boltzmann weight |
 | `flexaids_color_mode <mode>` | Color mode poses by score |
+| `flexaids_thermo <mode>` | Print thermodynamic properties |
 | `flexaids_mode_details <mode>` | Print detailed mode statistics |
+| `flexaids_entropy_heatmap <mode>` | Spatial entropy density heatmap |
+| `flexaids_animate <m1> <m2>` | Interpolated animation between modes |
+| `flexaids_itc_plot` | Enthalpy-entropy compensation plot |
+| `flexaids_itc_compare <csv>` | Compare predictions with ITC data |
+| `flexaids_dock <obj> <lig>` | Interactive docking from PyMOL |
+| `flexaids_dock_cancel` | Cancel running interactive dock |
 
 Requires: `pip install -e python/`
 
@@ -718,6 +728,7 @@ FlexAIDdS/
 │   ├── config_defaults.h    # Default parameter schema
 │   ├── config_parser.cpp/h  # JSON config system
 │   ├── hardware_dispatch.cpp/h # Unified HW backend selection
+│   ├── simd_distance.h      # SIMD-accelerated distance primitives
 │   ├── ShannonThermoStack/  # Shannon entropy + HW acceleration
 │   ├── LigandRingFlex/      # Ring conformer sampling
 │   ├── ChiralCenter/        # R/S discrimination
