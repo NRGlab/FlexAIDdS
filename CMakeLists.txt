@@ -903,6 +903,45 @@ if(BUILD_TESTING)
     flexaids_configure_simd(test_cavity_detect)
     add_test(NAME CavityDetectTests COMMAND test_cavity_detect)
 
+    # test_mif_grid — MIFGrid molecular interaction field tests
+    add_executable(test_mif_grid
+        tests/test_mif_grid.cpp
+    )
+    target_include_directories(test_mif_grid PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
+    )
+    target_link_libraries(test_mif_grid PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_mif_grid PRIVATE /O2)
+    else()
+        target_compile_options(test_mif_grid PRIVATE -O2)
+    endif()
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_mif_grid PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    flexaids_configure_simd(test_mif_grid)
+    add_test(NAME MIFGridTests COMMAND test_mif_grid)
+
+    # test_reflig_spectrophore — RefLigSeed + Spectrophore tests
+    add_executable(test_reflig_spectrophore
+        tests/test_reflig_spectrophore.cpp
+    )
+    target_include_directories(test_reflig_spectrophore PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
+    )
+    target_link_libraries(test_reflig_spectrophore PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_reflig_spectrophore PRIVATE /O2)
+    else()
+        target_compile_options(test_reflig_spectrophore PRIVATE -O2)
+    endif()
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_reflig_spectrophore PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    add_test(NAME RefLigSpectrophoreTests COMMAND test_reflig_spectrophore)
+
     # test_binding_mode_statmech — BindingMode ↔ StatMechEngine integration tests
     add_executable(test_binding_mode_statmech
         tests/test_binding_mode_statmech.cpp
