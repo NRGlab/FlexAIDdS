@@ -10,6 +10,7 @@ from .tencm import (
     run_shannon_thermo_stack,
 )
 from .__version__ import __version__ as __version__
+from .updater import check_for_updates, UpdateInfo
 
 # Pure-Python thermodynamics (always available)
 from .thermodynamics import StatMechEngine, Thermodynamics, kB_kcal, kB_SI
@@ -160,6 +161,9 @@ __all__ = [
     # Physical constants
     "kB_kcal",
     "kB_SI",
+    # Updater
+    "check_for_updates",
+    "UpdateInfo",
     # Availability flag
     "HAS_CORE_BINDINGS",
     # Core types (C++ when available, pure-Python fallback otherwise)
