@@ -11,6 +11,16 @@ from .tencm import (
 )
 from .__version__ import __version__ as __version__
 from .updater import check_for_updates, UpdateInfo
+from .boltz2 import (
+    Boltz2Client,
+    Boltz2PredictionResult,
+    Boltz2AffinityResult,
+    Boltz2Polymer,
+    Boltz2Ligand,
+    PocketConstraint,
+    PocketContact,
+    Boltz2Error,
+)
 
 # Pure-Python thermodynamics (always available)
 from .thermodynamics import StatMechEngine, Thermodynamics, kB_kcal, kB_SI
@@ -164,6 +174,15 @@ __all__ = [
     # Updater
     "check_for_updates",
     "UpdateInfo",
+    # Boltz-2 NIM client
+    "Boltz2Client",
+    "Boltz2PredictionResult",
+    "Boltz2AffinityResult",
+    "Boltz2Polymer",
+    "Boltz2Ligand",
+    "PocketConstraint",
+    "PocketContact",
+    "Boltz2Error",
     # Availability flag
     "HAS_CORE_BINDINGS",
     # Core types (C++ when available, pure-Python fallback otherwise)
