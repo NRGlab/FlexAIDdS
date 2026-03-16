@@ -10,7 +10,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
 [![Python](https://img.shields.io/badge/python-%E2%89%A5%203.9-3776AB.svg)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey.svg)](#)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](#)
 
 </div>
 
@@ -435,9 +435,25 @@ Tests marked `@requires_core` skip gracefully when the C++ extension is not buil
 | `test_statmech.cpp` | StatMechEngine correctness |
 | `test_binding_mode_statmech.cpp` | BindingMode / StatMechEngine integration |
 | `test_binding_mode_vibrational.cpp` | ENCoM vibrational correction |
-| `test_tencom_diff.cpp` | TorsionalENM differential engine |
+| `test_binding_mode_advanced.cpp` | Advanced binding mode features |
+| `test_tencom_diff.cpp` | tENCoM differential engine |
+| `test_tencom_entropy_diff.cpp` | tENCoM entropy differential |
 | `test_hardware_dispatch.cpp` | ShannonThermoStack hardware dispatch |
+| `test_hardware_detect_dispatch.cpp` | Hardware detection + dispatch |
+| `test_unified_dispatch.cpp` | Unified dispatch backend selection |
 | `test_ga_validation.cpp` | Genetic algorithm validation |
+| `test_ga_core.cpp` | GA core operators |
+| `test_gaboom.cpp` | gaboom engine tests |
+| `test_vcontacts.cpp` | Voronoi contact function |
+| `test_soft_contact_matrix.cpp` | 256×256 soft contact matrix |
+| `test_json_config.cpp` | JSON config parser |
+| `test_cavity_detect.cpp` | SURFNET cavity detection |
+| `test_cleft_cavity.cpp` | Cleft/cavity integration |
+| `test_chiral_center.cpp` | R/S chiral center discrimination |
+| `test_ring_conformer_library.cpp` | Ring conformer sampling |
+| `test_sugar_pucker.cpp` | Sugar pucker pseudorotation |
+| `test_encom.cpp` | ENCoM vibrational entropy |
+| `test_ptm_attachment.cpp` | Post-translational modification |
 
 **Python tests** (`python/tests/`):
 
@@ -445,11 +461,26 @@ Tests marked `@requires_core` skip gracefully when the C++ extension is not buil
 |:-----|:---------|
 | `test_results_io.py` | Result file parsing |
 | `test_results_loader_models.py` | Data model validation |
+| `test_results.py` | Result loading integration |
 | `test_statmech.py` | StatMechEngine accuracy (requires C++) |
 | `test_statmech_smoke.py` | CI smoke test |
+| `test_py_statmech.py` | Pure-Python StatMech fallback |
 | `test_tencm.py` | TorsionalENM, ShannonThermoStack |
 | `test_docking.py` | Docking API, BindingMode thermodynamics |
 | `test_encom.py` | ENCoM vibrational entropy |
+| `test_thermodynamics.py` | Thermodynamics module |
+| `test_thermodynamics_dataclass.py` | Thermodynamics dataclass |
+| `test_energy_matrix.py` | Energy matrix operations |
+| `test_train_256x256.py` | 256×256 matrix training |
+| `test_models.py` | Data model validation |
+| `test_models_deserialization.py` | Model deserialization |
+| `test_io.py` | PDB/MOL2 I/O utilities |
+| `test_pdb_io.py` | PDB I/O and REMARK parsing |
+| `test_cli.py` | CLI entry point tests |
+| `test_import_fallback.py` | Graceful import without C++ |
+| `test_version.py` | Version string checks |
+| `test_visualization.py` | PyMOL visualization helpers |
+| `test_phase3_features.py` | Phase 3 feature integration |
 
 </details>
 
