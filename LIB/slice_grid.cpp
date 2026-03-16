@@ -19,9 +19,8 @@ void slice_grid(FA_Global* FA,genlim* gene_lim,atom* atoms,resid* residue,gridpo
         cleftgrid_map.insert(std::pair<GridKey,int>(key, i));
     }
 
-    // Neighbor offsets: 6 axis-aligned + 12 face-diagonals = 18 directions.
-    // We only use "positive half" (14 unique directions) to avoid inserting
-    // midpoints twice for the same pair (A->B and B->A).
+    // Neighbor offsets: 3 axis-aligned + 6 face-diagonals = 9 directions.
+    // Only "positive half" to avoid inserting midpoints twice (A->B and B->A).
     // Axis-aligned neighbors at distance spacer_length:
     static const int axis_offsets[][3] = {
         {1,0,0}, {0,1,0}, {0,0,1}
@@ -29,8 +28,7 @@ void slice_grid(FA_Global* FA,genlim* gene_lim,atom* atoms,resid* residue,gridpo
     // Face-diagonal neighbors at distance spacer_length*sqrt(2):
     static const int diag_offsets[][3] = {
         {1,1,0}, {1,-1,0}, {1,0,1}, {1,0,-1},
-        {0,1,1}, {0,1,-1},
-        {1,1,1}, {1,1,-1}, {1,-1,1}, {1,-1,-1}  // body diagonals too
+        {0,1,1}, {0,1,-1}
     };
 
     // Snap spacer to integer milliangstroms for exact neighbor probing
@@ -63,7 +61,7 @@ void slice_grid(FA_Global* FA,genlim* gene_lim,atom* atoms,resid* residue,gridpo
         }
 
         // Check face-diagonal neighbors (distance = spacer_length*sqrt(2))
-        for(int d = 0; d < 10; d++){
+        for(int d = 0; d < 6; d++){
             GridKey neighbor;
             neighbor.ix = gk.ix + diag_offsets[d][0] * ispacer;
             neighbor.iy = gk.iy + diag_offsets[d][1] * ispacer;
@@ -102,6 +100,7 @@ void slice_grid(FA_Global* FA,genlim* gene_lim,atom* atoms,resid* residue,gridpo
             }
         }
 
+        memset(&(*cleftgrid)[FA->num_grd], 0, sizeof(gridpoint));
         float coor[3];
         kv.first.to_coor(coor);
         (*cleftgrid)[FA->num_grd].coor[0] = coor[0];

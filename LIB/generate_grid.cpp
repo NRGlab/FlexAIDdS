@@ -73,6 +73,7 @@ gridpoint* generate_grid(FA_Global* FA,sphere* spheres, atom* atoms, resid* resi
 								}
 							}
 
+							memset(&cleftgrid[FA->num_grd], 0, sizeof(gridpoint));
 							cleftgrid[FA->num_grd].coor[0] = c[0];
 							cleftgrid[FA->num_grd].coor[1] = c[1];
 							cleftgrid[FA->num_grd].coor[2] = c[2];

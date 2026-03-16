@@ -10,7 +10,9 @@
 #include <cstdio>
 #include <cmath>
 
+[[deprecated("Use GridKey instead")]]
 std::string get_key(const float* coor);
+[[deprecated("Use GridKey instead")]]
 void parse_key(std::string key, float* coor);
 
 // Integer-based coordinate key for reproducible deduplication.

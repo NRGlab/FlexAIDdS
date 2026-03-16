@@ -95,6 +95,7 @@ void partition_grid(FA_Global* FA,chromosome* chrom,genlim* gene_lim,atom* atoms
 			}
 		}
 
+		memset(&(*cleftgrid)[FA->num_grd], 0, sizeof(gridpoint));
 		(*cleftgrid)[FA->num_grd].coor[0] = coor[0];
 		(*cleftgrid)[FA->num_grd].coor[1] = coor[1];
 		(*cleftgrid)[FA->num_grd].coor[2] = coor[2];
@@ -132,6 +133,8 @@ void partition_grid(FA_Global* FA,chromosome* chrom,genlim* gene_lim,atom* atoms
 		}
 	}
 
-	calc_cleftic(FA,(*cleftgrid));
+	// Note: calc_cleftic is NOT called here because partition_grid is always
+	// followed by slice_grid (gaboom.cpp), which recalculates all internal
+	// coordinates after adding midpoints.
 
 }

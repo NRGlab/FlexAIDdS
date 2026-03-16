@@ -5,6 +5,7 @@
 #include <cmath>
 #include <map>
 #include <set>
+#include <vector>
 #include "../LIB/maps.hpp"
 
 // ============================================================================
@@ -80,7 +81,17 @@ TEST(GridKey, UsableAsMapKey) {
 
 // ============================================================================
 // Legacy get_key / parse_key tests — ensure backward compatibility
+// (Suppress deprecation warnings since these are intentionally testing
+// the deprecated API)
 // ============================================================================
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4996)
+#endif
 
 TEST(LegacyMapKey, RoundTrip) {
     float orig[3] = {1.234f, -5.678f, 0.0f};
@@ -97,6 +108,12 @@ TEST(LegacyMapKey, KeyLength) {
     std::string key = get_key(coor);
     EXPECT_EQ(key.length(), 24u);  // 3 * 8 chars
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#elif defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 // ============================================================================
 // Diagonal distance test — verifies the sin(45) fix
@@ -186,6 +203,88 @@ TEST(SliceGrid, NeighborProbeFindsFaceDiagonal) {
     EXPECT_NEAR(mid_coor[0], 0.5f, 0.001f);
     EXPECT_NEAR(mid_coor[1], 0.5f, 0.001f);
     EXPECT_NEAR(mid_coor[2], 0.0f, 0.001f);
+}
+
+// ============================================================================
+// Body-diagonal exclusion — verifies that slice_grid does NOT create
+// midpoints along body diagonals (distance s*sqrt(3))
+// ============================================================================
+
+TEST(SliceGrid, BodyDiagonalNotProbed) {
+    // Simulate the slice_grid neighbor-probing logic on a 2x2x2 cube grid
+    // (8 corner points). Verify that the body-diagonal midpoint (0.5, 0.5, 0.5)
+    // is NOT generated.
+    float spacer = 1.0f;
+    int ispacer = static_cast<int>(std::round(spacer * 1000.0f));
+
+    // Build a 2x2x2 cube grid: 8 points at (0,0,0)..(1,1,1)
+    std::map<GridKey, int> grid;
+    int idx = 0;
+    for (int x = 0; x <= 1; x++)
+        for (int y = 0; y <= 1; y++)
+            for (int z = 0; z <= 1; z++)
+                grid[GridKey(x * spacer, y * spacer, z * spacer)] = idx++;
+
+    EXPECT_EQ(grid.size(), 8u);
+
+    // Same offsets as slice_grid.cpp (no body diagonals)
+    static const int axis_offsets[][3] = {
+        {1,0,0}, {0,1,0}, {0,0,1}
+    };
+    static const int diag_offsets[][3] = {
+        {1,1,0}, {1,-1,0}, {1,0,1}, {1,0,-1},
+        {0,1,1}, {0,1,-1}
+    };
+
+    std::set<GridKey> midpoints;
+    for (auto& kv : grid) {
+        const GridKey& gk = kv.first;
+
+        for (int d = 0; d < 3; d++) {
+            GridKey nb;
+            nb.ix = gk.ix + axis_offsets[d][0] * ispacer;
+            nb.iy = gk.iy + axis_offsets[d][1] * ispacer;
+            nb.iz = gk.iz + axis_offsets[d][2] * ispacer;
+            if (grid.count(nb)) {
+                GridKey mid;
+                mid.ix = (gk.ix + nb.ix) / 2;
+                mid.iy = (gk.iy + nb.iy) / 2;
+                mid.iz = (gk.iz + nb.iz) / 2;
+                if (!grid.count(mid)) midpoints.insert(mid);
+            }
+        }
+
+        for (int d = 0; d < 6; d++) {
+            GridKey nb;
+            nb.ix = gk.ix + diag_offsets[d][0] * ispacer;
+            nb.iy = gk.iy + diag_offsets[d][1] * ispacer;
+            nb.iz = gk.iz + diag_offsets[d][2] * ispacer;
+            if (grid.count(nb)) {
+                GridKey mid;
+                mid.ix = (gk.ix + nb.ix) / 2;
+                mid.iy = (gk.iy + nb.iy) / 2;
+                mid.iz = (gk.iz + nb.iz) / 2;
+                if (!grid.count(mid)) midpoints.insert(mid);
+            }
+        }
+    }
+
+    // The body-diagonal midpoint (0.5, 0.5, 0.5) should NOT be present
+    GridKey body_mid(0.5f, 0.5f, 0.5f);
+    EXPECT_EQ(midpoints.count(body_mid), 0u)
+        << "Body-diagonal midpoint (0.5, 0.5, 0.5) should not be generated";
+
+    // But face-diagonal midpoints SHOULD be present
+    // e.g., midpoint of (0,0,0)-(1,1,0) = (0.5, 0.5, 0.0)
+    GridKey face_mid(0.5f, 0.5f, 0.0f);
+    EXPECT_EQ(midpoints.count(face_mid), 1u)
+        << "Face-diagonal midpoint (0.5, 0.5, 0.0) should be generated";
+
+    // And axis-aligned midpoints SHOULD be present
+    // e.g., midpoint of (0,0,0)-(1,0,0) = (0.5, 0.0, 0.0)
+    GridKey axis_mid(0.5f, 0.0f, 0.0f);
+    EXPECT_EQ(midpoints.count(axis_mid), 1u)
+        << "Axis-aligned midpoint (0.5, 0.0, 0.0) should be generated";
 }
 
 // ============================================================================
