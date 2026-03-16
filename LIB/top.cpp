@@ -3,6 +3,7 @@
 #include "Vcontacts.h"
 #include "config_parser.h"
 #include "config_defaults.h"
+#include "direct_input.h"
 
 #include <string>
 
@@ -280,9 +281,6 @@ int main(int argc, char **argv){
 			using O = json::Object;
 			config = json::merge(config, V(O{{"advanced", V(O{{"assume_folded", V(true)}})}}));
 		}
-		if (use_folded) {
-			config = merge_json(config, nlohmann::json{{"advanced", {{"assume_folded", true}}}});
-		}
 
 		// Apply config to FA/GB structs
 		apply_config(config, FA, GB);
@@ -293,22 +291,24 @@ int main(int argc, char **argv){
 			FA->intramolecular ? "ON" : "OFF",
 			FA->complf);
 
-		// For now, the new mode sets the config values but still requires
-		// the legacy input files to be generated or provided.
-		// TODO: Phase 2 — direct PDB/MOL2 loading without .inp files.
-		fprintf(stderr, "NOTE: Direct receptor/ligand mode is prepared (config applied).\n");
-		fprintf(stderr, "Input pipeline integration in progress. Use --legacy for full runs.\n");
-		fprintf(stderr, "Config loaded: %s\n", config_path.empty() ? "(defaults)" : config_path.c_str());
-
 		// Set output prefix for end_strfile
 		strncpy(end_strfile, output_prefix.c_str(), MAX_PATH__ - 1);
 		end_strfile[MAX_PATH__ - 1] = '\0';
 		strcpy(FA->rrgfile, end_strfile);
 
-		dockinp[0] = '\0';
-		gainp[0] = '\0';
+		// Direct PDB/MOL2 loading pipeline — bypasses legacy .inp files.
+		// Reads receptor, ligand, auto-detects cleft, and sets up all
+		// data structures needed by the GA engine.
+		if (setup_direct_input(FA, GB, VC, &atoms, &residue, &rotamer,
+		                       &cleftgrid, argv[1], argv[2]) != 0) {
+			fprintf(stderr, "ERROR: Direct input pipeline failed.\n");
+			Terminate(1);
+		}
 
-		Terminate(0);
+		// GA input file is not used in direct mode; create empty path
+		// so that the GA engine receives a valid (but unused) string.
+		strcpy(gainp, "");
+		strcpy(dockinp, "");
 	}
 
 	//printf("END FILE:<%s>\n",end_strfile);

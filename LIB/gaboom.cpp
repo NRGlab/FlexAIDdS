@@ -1764,6 +1764,12 @@ void read_gainputs(FA_Global* FA,GB_Global* GB,int* gen_int,int* sz_part,char fi
 	char field[9];           /* field names on INPUT file */
 
 	//printf("file here is <%s>\n",file);
+	// In direct mode (no .ga.inp file), all GA params are set via
+	// apply_config().  Skip file parsing when the path is empty.
+	if (file[0] == '\0') {
+		printf("read_gainputs: no GA input file — using config defaults\n");
+		return;
+	}
 	infile_ptr=NULL;
 	if(!OpenFile_B(file,"r",&infile_ptr)){
 		fprintf(stderr,"ERROR: Cannot find file '%s'.\n", file);

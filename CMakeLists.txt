@@ -271,6 +271,8 @@ target_sources(FlexAID PRIVATE
         LIB/PTMAttachment/PTMAttachment.cpp
         # ── JSON config parser (zero external dependencies) ──
         LIB/config_parser.cpp
+        # ── Direct PDB/MOL2 input pipeline (Phase 2) ──
+        LIB/direct_input.cpp
 )
 
 target_include_directories(FlexAID PRIVATE
