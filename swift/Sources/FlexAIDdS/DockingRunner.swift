@@ -96,6 +96,72 @@ public actor DockingRunner {
         return ThermodynamicResult(from: fx_statmech_compute(engineRef))
     }
 
+    // MARK: - Shannon Entropy Decomposition
+
+    /// Extract the ShannonThermoStack decomposition from the GA context.
+    ///
+    /// Returns a `ShannonEntropyDecomposition` with configurational/vibrational
+    /// split, convergence diagnostics, and histogram summary for the oracle referee.
+    public func extractShannonDecomposition() -> ShannonEntropyDecomposition? {
+        guard let ctx = contextRef else { return nil }
+
+        // Query the ShannonThermoStack result from the C bridge
+        var thermoResult = FXShannonThermoResult()
+        guard fx_ga_get_shannon_thermo(ctx, &thermoResult) else { return nil }
+
+        // Extract per-mode entropy if available
+        var perModeEntropy: [Double] = []
+        if let pop = population {
+            let modeCount = Int(fx_population_size(pop))
+            for i in 0..<modeCount {
+                if let modeRef = fx_population_get_mode(pop, Int32(i)) {
+                    let modeThermo = fx_mode_thermodynamics(modeRef)
+                    perModeEntropy.append(modeThermo.entropy)
+                }
+            }
+        }
+
+        // Extract dominant histogram bins (top 5 most populated)
+        var dominantBins: [(center: Double, probability: Double)] = []
+        let binCount = Int(thermoResult.num_histogram_bins)
+        if binCount > 0, thermoResult.histogram_centers != nil, thermoResult.histogram_probs != nil {
+            var binPairs: [(center: Double, probability: Double)] = []
+            for i in 0..<binCount {
+                let center = thermoResult.histogram_centers[i]
+                let prob = thermoResult.histogram_probs[i]
+                if prob > 0 {
+                    binPairs.append((center: center, probability: prob))
+                }
+            }
+            // Sort by probability descending, take top 5
+            binPairs.sort { $0.probability > $1.probability }
+            dominantBins = Array(binPairs.prefix(5))
+        }
+
+        // Detect convergence from entropy history
+        let isConverged = thermoResult.is_converged
+        let convergenceRate = thermoResult.convergence_rate
+
+        // Determine hardware backend string
+        let backend = String(cString: thermoResult.hardware_backend)
+
+        let occupiedBins = Int(thermoResult.occupied_bins)
+        let totalBins = Int(thermoResult.total_bins)
+
+        return ShannonEntropyDecomposition(
+            configurational: thermoResult.shannon_entropy,
+            vibrational: thermoResult.torsional_vib_entropy,
+            entropyContribution: thermoResult.entropy_contribution,
+            isConverged: isConverged,
+            convergenceRate: convergenceRate,
+            hardwareBackend: backend,
+            occupiedBins: occupiedBins,
+            totalBins: totalBins,
+            perModeEntropy: perModeEntropy,
+            dominantBins: dominantBins
+        )
+    }
+
     // MARK: - Private Helpers
 
     private func extractResults() -> DockingResult {

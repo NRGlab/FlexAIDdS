@@ -10,6 +10,7 @@ export type {
   Thermodynamics,
   TargetModification,
   HealthCorrelation,
+  ShannonEntropyDecomposition,
 } from './BindingPopulation.js';
 
 export { serializePopulation, deserializePopulation } from './BindingPopulation.js';
