@@ -248,7 +248,7 @@ target_sources(FlexAID PRIVATE
         LIB/generate_grid.cpp
         LIB/maps.cpp
         # ── new C++20 modules ──
-        LIB/tencm.cpp
+        LIB/tENCoM/tencm.cpp
         LIB/statmech.cpp
         LIB/encom.cpp             # ← NEW: ENCoM vibrational entropy
         # ── v1.5 thermodynamic + hardware acceleration modules ──
@@ -275,6 +275,7 @@ target_sources(FlexAID PRIVATE
 
 target_include_directories(FlexAID PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+    ${CMAKE_CURRENT_SOURCE_DIR}/LIB/tENCoM
     ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
     ${CMAKE_CURRENT_SOURCE_DIR}/LIB/LigandRingFlex
     ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
@@ -318,7 +319,7 @@ if(FLEXAIDS_USE_CUDA)
     target_sources(FlexAID PRIVATE
         LIB/cuda_eval.cu                          # existing CF batch kernel
         LIB/ShannonThermoStack/shannon_cuda.cu    # Shannon entropy histogram kernel
-        LIB/tencm_cuda.cu                         # TENCoM contact discovery + Hessian assembly
+        LIB/tENCoM/tencm_cuda.cu                         # TENCoM contact discovery + Hessian assembly
     )
     target_compile_definitions(FlexAID PRIVATE FLEXAIDS_USE_CUDA)
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
@@ -353,9 +354,9 @@ if(FLEXAIDS_USE_METAL)
         COMPILE_FLAGS "-std=c++20 -fno-objc-arc"
     )
     # TENCoM Metal bridge (GPU contact discovery + Hessian assembly)
-    target_sources(FlexAID PRIVATE LIB/tencm_metal.mm)
+    target_sources(FlexAID PRIVATE LIB/tENCoM/tencm_metal.mm)
     target_compile_definitions(FlexAID PRIVATE FLEXAIDS_HAS_METAL_TENCM)
-    set_source_files_properties(LIB/tencm_metal.mm PROPERTIES
+    set_source_files_properties(LIB/tENCoM/tencm_metal.mm PROPERTIES
         LANGUAGE OBJCXX
         COMPILE_FLAGS "-std=c++20 -fno-objc-arc"
     )
@@ -420,14 +421,16 @@ endif()
 option(ENABLE_TENCOM_BENCHMARK "Build the TeNCoM benchmark binary" OFF)
 if(ENABLE_TENCOM_BENCHMARK)
     add_executable(benchmark_tencom
-        LIB/benchmark_tencom.cpp
-        LIB/tencm.cpp
+        LIB/tENCoM/benchmark_tencom.cpp
+        LIB/tENCoM/tencm.cpp
         LIB/statmech.cpp
         LIB/hardware_dispatch.cpp
         LIB/hardware_detect.cpp
         LIB/encom.cpp
     )
-    target_include_directories(benchmark_tencom PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_include_directories(benchmark_tencom PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/tENCoM)
     if(MSVC)
         target_compile_options(benchmark_tencom PRIVATE /O2 /fp:fast)
     else()
@@ -449,17 +452,19 @@ endif()
 option(ENABLE_TENCOM_TOOL "Build the tENCoM vibrational entropy differential tool" ON)
 if(ENABLE_TENCOM_TOOL)
     add_executable(tENCoM
-        LIB/tencom_main.cpp
-        LIB/tencom_diff.cpp
-        LIB/tencom_output.cpp
-        LIB/pdb_calpha.cpp
-        LIB/tencm.cpp
+        LIB/tENCoM/tencom_main.cpp
+        LIB/tENCoM/tencom_diff.cpp
+        LIB/tENCoM/tencom_output.cpp
+        LIB/tENCoM/pdb_calpha.cpp
+        LIB/tENCoM/tencm.cpp
         LIB/statmech.cpp
         LIB/hardware_dispatch.cpp
         LIB/hardware_detect.cpp
         LIB/encom.cpp
     )
-    target_include_directories(tENCoM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_include_directories(tENCoM PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/tENCoM)
     if(MSVC)
         target_compile_options(tENCoM PRIVATE /O2 /GL /fp:fast /DNDEBUG /MT)
         target_link_options(tENCoM PRIVATE /LTCG)
@@ -478,7 +483,7 @@ if(ENABLE_TENCOM_TOOL)
     endif()
     # CUDA GPU acceleration for large proteins (N > 256 residues)
     if(FLEXAIDS_USE_CUDA)
-        target_sources(tENCoM PRIVATE LIB/tencm_cuda.cu)
+        target_sources(tENCoM PRIVATE LIB/tENCoM/tencm_cuda.cu)
         target_compile_definitions(tENCoM PRIVATE FLEXAIDS_USE_CUDA)
         set_target_properties(tENCoM PROPERTIES
             CUDA_SEPARABLE_COMPILATION ON
@@ -487,9 +492,9 @@ if(ENABLE_TENCOM_TOOL)
     endif()
     # Metal GPU acceleration (macOS)
     if(FLEXAIDS_USE_METAL)
-        target_sources(tENCoM PRIVATE LIB/tencm_metal.mm)
+        target_sources(tENCoM PRIVATE LIB/tENCoM/tencm_metal.mm)
         target_compile_definitions(tENCoM PRIVATE FLEXAIDS_HAS_METAL_TENCM)
-        set_source_files_properties(LIB/tencm_metal.mm PROPERTIES
+        set_source_files_properties(LIB/tENCoM/tencm_metal.mm PROPERTIES
             LANGUAGE OBJCXX
             COMPILE_FLAGS "-std=c++20 -fno-objc-arc")
         target_link_libraries(tENCoM PRIVATE
@@ -536,6 +541,7 @@ if(BUILD_FLEXAIDDS_FAST)
 
     target_include_directories(FlexAIDdS PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/tENCoM
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/LigandRingFlex
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
@@ -635,9 +641,10 @@ if(BUILD_TESTING)
         LIB/statmech.cpp
         LIB/hardware_dispatch.cpp
         LIB/hardware_detect.cpp
-        LIB/tencm.cpp)
+        LIB/tENCoM/tencm.cpp)
     target_include_directories(test_hardware_dispatch PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/tENCoM
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack)
     target_link_libraries(test_hardware_dispatch PRIVATE GTest::gtest GTest::gtest_main)
     target_compile_options(test_hardware_dispatch PRIVATE -O2)
@@ -686,15 +693,17 @@ if(BUILD_TESTING)
     # test_tencom_diff — tENCoM differential engine tests
     add_executable(test_tencom_diff
         tests/test_tencom_diff.cpp
-        LIB/tencom_diff.cpp
-        LIB/pdb_calpha.cpp
-        LIB/tencm.cpp
+        LIB/tENCoM/tencom_diff.cpp
+        LIB/tENCoM/pdb_calpha.cpp
+        LIB/tENCoM/tencm.cpp
         LIB/statmech.cpp
         LIB/hardware_dispatch.cpp
         LIB/hardware_detect.cpp
         LIB/encom.cpp
     )
-    target_include_directories(test_tencom_diff PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_include_directories(test_tencom_diff PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/tENCoM)
     target_link_libraries(test_tencom_diff PRIVATE GTest::gtest GTest::gtest_main)
     if(MSVC)
         target_compile_options(test_tencom_diff PRIVATE /O2)
@@ -736,7 +745,7 @@ if(BUILD_TESTING)
         LIB/Vcontacts.cpp
         LIB/statmech.cpp
         LIB/geometry.cpp
-        LIB/tencm.cpp
+        LIB/tENCoM/tencm.cpp
         LIB/encom.cpp
         LIB/BindingMode.cpp
         LIB/ShannonThermoStack/ShannonThermoStack.cpp
@@ -749,6 +758,7 @@ if(BUILD_TESTING)
     )
     target_include_directories(test_gaboom PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/tENCoM
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
@@ -910,7 +920,7 @@ if(BUILD_TESTING)
         LIB/Vcontacts.cpp
         LIB/statmech.cpp
         LIB/geometry.cpp
-        LIB/tencm.cpp
+        LIB/tENCoM/tencm.cpp
         LIB/encom.cpp
         LIB/BindingMode.cpp
         LIB/ShannonThermoStack/ShannonThermoStack.cpp
@@ -923,6 +933,7 @@ if(BUILD_TESTING)
     )
     target_include_directories(test_binding_mode_statmech PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/tENCoM
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
@@ -950,7 +961,7 @@ if(BUILD_TESTING)
         LIB/Vcontacts.cpp
         LIB/statmech.cpp
         LIB/geometry.cpp
-        LIB/tencm.cpp
+        LIB/tENCoM/tencm.cpp
         LIB/encom.cpp
         LIB/BindingMode.cpp
         LIB/ShannonThermoStack/ShannonThermoStack.cpp
@@ -963,6 +974,7 @@ if(BUILD_TESTING)
     )
     target_include_directories(test_binding_mode_advanced PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/tENCoM
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
@@ -990,7 +1002,7 @@ if(BUILD_TESTING)
         LIB/Vcontacts.cpp
         LIB/statmech.cpp
         LIB/geometry.cpp
-        LIB/tencm.cpp
+        LIB/tENCoM/tencm.cpp
         LIB/encom.cpp
         LIB/BindingMode.cpp
         LIB/ShannonThermoStack/ShannonThermoStack.cpp
@@ -1003,6 +1015,7 @@ if(BUILD_TESTING)
     )
     target_include_directories(test_ga_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/tENCoM
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
@@ -1030,7 +1043,7 @@ if(BUILD_TESTING)
         LIB/Vcontacts.cpp
         LIB/statmech.cpp
         LIB/geometry.cpp
-        LIB/tencm.cpp
+        LIB/tENCoM/tencm.cpp
         LIB/encom.cpp
         LIB/BindingMode.cpp
         LIB/ShannonThermoStack/ShannonThermoStack.cpp
@@ -1043,6 +1056,7 @@ if(BUILD_TESTING)
     )
     target_include_directories(test_ga_validation PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/tENCoM
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/NATURaL
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/CavityDetect
