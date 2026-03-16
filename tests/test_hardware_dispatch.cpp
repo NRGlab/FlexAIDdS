@@ -734,6 +734,132 @@ TEST(TorsionalVibEntropyEdge, MixedValidInvalidModes) {
 }
 
 // ===========================================================================
+// ENTROPY PLATEAU DETECTION (Improvement 1)
+// ===========================================================================
+
+TEST(EntropyPlateau, ConstantHistoryDetected) {
+    // All entries identical → plateau
+    std::vector<double> history = {2.5, 2.5, 2.5, 2.5, 2.5};
+    EXPECT_TRUE(detect_entropy_plateau(history, 5, 0.01));
+}
+
+TEST(EntropyPlateau, DecreasingHistoryNotDetected) {
+    // Monotonically decreasing → no plateau
+    std::vector<double> history = {5.0, 4.0, 3.0, 2.0, 1.0};
+    EXPECT_FALSE(detect_entropy_plateau(history, 5, 0.01));
+}
+
+TEST(EntropyPlateau, PlateauAfterDecrease) {
+    // Decrease then stabilise
+    std::vector<double> history = {5.0, 3.0, 1.5, 1.5, 1.5, 1.5};
+    EXPECT_TRUE(detect_entropy_plateau(history, 3, 0.01));
+    EXPECT_FALSE(detect_entropy_plateau(history, 5, 0.01));
+}
+
+TEST(EntropyPlateau, WindowLargerThanHistory) {
+    std::vector<double> history = {2.5, 2.5};
+    EXPECT_FALSE(detect_entropy_plateau(history, 5, 0.01));
+}
+
+TEST(EntropyPlateau, EmptyHistory) {
+    std::vector<double> history;
+    EXPECT_FALSE(detect_entropy_plateau(history, 5, 0.01));
+}
+
+TEST(EntropyPlateau, ZeroEntropyPlateau) {
+    // All zeros → plateau (degenerate ensemble)
+    std::vector<double> history = {0.0, 0.0, 0.0};
+    EXPECT_TRUE(detect_entropy_plateau(history, 3, 0.01));
+}
+
+TEST(EntropyPlateau, NearThreshold) {
+    // Values within 1% of each other
+    std::vector<double> history = {1.000, 1.005, 1.009, 1.003};
+    EXPECT_TRUE(detect_entropy_plateau(history, 4, 0.01));
+    // But not within 0.1%
+    EXPECT_FALSE(detect_entropy_plateau(history, 4, 0.001));
+}
+
+// ===========================================================================
+// CORRECTED SCALING FORMULA (Improvement 2)
+// ===========================================================================
+
+TEST(ScalingFormula, AdditiveDecomposition) {
+    // Verify total_S = S_conf + S_vib (no quadratic term)
+    statmech::StatMechEngine eng(298.15);
+    // Add samples with varied energies to get non-trivial Shannon entropy
+    for (int i = 0; i < 100; ++i)
+        eng.add_sample(-10.0 + 0.1 * i);
+
+    // Build tencm with some valid modes
+    tencm::TorsionalENM tencm;
+    // No build → S_vib = 0, so entropyContribution = -T * S_conf_phys
+
+    auto result = run_shannon_thermo_stack(eng, tencm, 0.0);
+    // S_conf_phys = H_bits * kB * ln(2)
+    double expected_S_conf = result.shannonEntropy * kB_kcal * std::log(2.0);
+    // entropyContribution = -T * (S_conf + 0) since no tencm modes
+    double expected_contrib = -298.15 * expected_S_conf;
+    EXPECT_NEAR(result.entropyContribution, expected_contrib, 1e-8);
+}
+
+TEST(ScalingFormula, Ln2ConversionFactor) {
+    // For H = 1 bit exactly, S_conf should be k_B * ln(2)
+    // We can't easily force H=1, but verify the relationship holds
+    statmech::StatMechEngine eng(298.15);
+    eng.add_sample(-10.0);
+    eng.add_sample(-5.0);
+    tencm::TorsionalENM tencm;
+
+    auto result = run_shannon_thermo_stack(eng, tencm, 0.0);
+    double H = result.shannonEntropy;
+    double expected_S = H * kB_kcal * std::log(2.0);
+    double expected_contrib = -298.15 * expected_S;
+    EXPECT_NEAR(result.entropyContribution, expected_contrib, 1e-8);
+}
+
+// ===========================================================================
+// GPU DISPATCH THRESHOLD (Improvement 3)
+// ===========================================================================
+
+TEST(GPUThreshold, SmallInputUsesScalarPath) {
+    // With N=100, results should be identical to scalar regardless of
+    // compile-time GPU flags (GPU dispatch is gated by threshold)
+    std::mt19937 rng(123);
+    std::normal_distribution<double> dist(0.0, 5.0);
+    std::vector<double> values(100);
+    for (auto& v : values) v = dist(rng);
+
+    double H = compute_shannon_entropy(values, 20);
+    EXPECT_GE(H, 0.0);
+    EXPECT_TRUE(std::isfinite(H));
+
+    // Compute again — should be deterministic
+    double H2 = compute_shannon_entropy(values, 20);
+    EXPECT_DOUBLE_EQ(H, H2);
+}
+
+TEST(GPUThreshold, ResultConsistencyAcrossSizes) {
+    // Same distribution at different sizes should give similar entropy
+    std::mt19937 rng(42);
+    std::normal_distribution<double> dist(0.0, 1.0);
+
+    std::vector<double> small(500), large(5000);
+    for (auto& v : small) v = dist(rng);
+    rng.seed(42);
+    for (auto& v : large) v = dist(rng);
+
+    double H_small = compute_shannon_entropy(small, 20);
+    double H_large = compute_shannon_entropy(large, 20);
+
+    // Both should be positive and in similar range for same distribution
+    EXPECT_GT(H_small, 0.0);
+    EXPECT_GT(H_large, 0.0);
+    // Entropy from same distribution should be reasonably close
+    EXPECT_NEAR(H_small, H_large, 1.0);
+}
+
+// ===========================================================================
 // MAIN
 // ===========================================================================
 

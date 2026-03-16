@@ -146,6 +146,10 @@ double compute_shannon_entropy(const std::vector<double>& values, int num_bins) 
 
     std::vector<int> bins(num_bins, 0);
 
+// GPU dispatch only for large datasets (N > GPU_DISPATCH_THRESHOLD).
+// For typical docking populations (100–10K), scalar/OpenMP is faster
+// than GPU kernel launch + memory transfer overhead.
+if (n > GPU_DISPATCH_THRESHOLD) {
 // ── 1. CUDA ───────────────────────────────────────────────────────────────────
 #ifdef FLEXAIDS_USE_CUDA
     {
@@ -165,6 +169,7 @@ double compute_shannon_entropy(const std::vector<double>& values, int num_bins) 
 #ifdef FLEXAIDS_HAS_METAL_SHANNON
     return ShannonMetalBridge::compute_shannon_entropy_metal(values, num_bins);
 #endif
+} // GPU_DISPATCH_THRESHOLD
 
 // ── 3. AVX-512 (+ optional OpenMP for multi-threaded private histograms) ──────
 #ifdef __AVX512F__
@@ -273,8 +278,14 @@ FullThermoResult run_shannon_thermo_stack(
     double S_vib        = tencm_model.is_built()
                           ? compute_torsional_vibrational_entropy(tencm_model.modes(), temperature_K)
                           : 0.0;
-    double S_conf_phys  = S_conf_bits * kB_kcal;
-    double total_S      = S_conf_phys * (1.0 + 0.5 * S_conf_bits) + S_vib;
+    // Convert Shannon H (bits) to physical entropy: S = k_B * H * ln(2)
+    // The ln(2) converts from bits to nats (natural information units).
+    double S_conf_phys  = S_conf_bits * kB_kcal * std::log(2.0);
+
+    // Additive decomposition: S_total = S_conf + S_vib
+    // Valid for independent conformational and vibrational DOFs
+    // (standard assumption in rigid-body docking + normal-mode analysis).
+    double total_S      = S_conf_phys + S_vib;
     double S_contrib    = -temperature_K * total_S;
     double final_dG     = base_deltaG + S_contrib;
 
@@ -301,6 +312,26 @@ FullThermoResult run_shannon_thermo_stack(
         " kcal/mol/K, ΔG=" + std::to_string(final_dG) + " kcal/mol";
 
     return { final_dG, S_conf_bits, S_vib, S_contrib, report };
+}
+
+// ─── detect_entropy_plateau ──────────────────────────────────────────────────
+
+bool detect_entropy_plateau(const std::vector<double>& history,
+                            int window, double rel_threshold) {
+    if (window <= 0 || static_cast<int>(history.size()) < window)
+        return false;
+
+    size_t start = history.size() - window;
+    double H_ref = history[start];
+
+    for (size_t k = start + 1; k < history.size(); ++k) {
+        double rel_change = (H_ref > 1e-12)
+            ? std::abs(history[k] - H_ref) / H_ref
+            : std::abs(history[k] - H_ref);
+        if (rel_change > rel_threshold)
+            return false;
+    }
+    return true;
 }
 
 } // namespace shannon_thermo

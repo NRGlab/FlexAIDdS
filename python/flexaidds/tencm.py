@@ -353,6 +353,11 @@ def run_shannon_thermo_stack(
     Combines Shannon configurational entropy from the GA ensemble with
     torsional vibrational entropy from the ENCoM backbone model.
 
+    Formula:
+        S_conf = k_B * H_bits * ln(2)   (bits → physical units)
+        S_total = S_conf + S_vib         (additive for independent DOFs)
+        ΔG = base_ΔG - T * S_total
+
     Args:
         energies:       List of pose energies from the GA ensemble.
         tencm_model:    Built TorsionalENM (optional; if None, vibrational
@@ -363,8 +368,10 @@ def run_shannon_thermo_stack(
     Returns:
         FullThermoResult with combined thermodynamic quantities.
     """
-    # Shannon entropy
+    # Shannon configurational entropy (bits → physical units)
+    # S_conf = k_B * H_bits * ln(2), converting from bits to nats
     H_shannon = compute_shannon_entropy(energies) if energies else 0.0
+    S_conf_phys = H_shannon * kB_kcal * math.log(2.0)
 
     # Torsional vibrational entropy
     S_vib = 0.0
@@ -372,7 +379,10 @@ def run_shannon_thermo_stack(
         S_vib = compute_torsional_vibrational_entropy(
             tencm_model.modes, temperature_K)
 
-    entropy_contribution = -temperature_K * S_vib
+    # Additive decomposition: S_total = S_conf + S_vib
+    # Valid for independent conformational and vibrational DOFs.
+    total_S = S_conf_phys + S_vib
+    entropy_contribution = -temperature_K * total_S
     deltaG = base_deltaG + entropy_contribution
 
     report = (

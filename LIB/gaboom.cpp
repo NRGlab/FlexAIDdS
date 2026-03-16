@@ -114,6 +114,12 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 	GB->duplicates = 0;
 	GB->intragenes = 0;
 
+	// Entropy convergence defaults (opt-in)
+	GB->entropy_convergence    = 0;
+	GB->entropy_check_interval = 10;
+	GB->entropy_window         = 5;
+	GB->entropy_rel_threshold  = 0.01;
+
 	printf("file in GA is <%s>\n",gainpfile);
 
 	read_gainputs(FA,GB,&geninterval,&popszpartition,gainpfile);
@@ -262,6 +268,13 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 	int save_num_chrom = (int)(GB->num_chrom*SAVE_CHROM_FRACTION);
 	int nrejected = 0;
 
+	// Entropy convergence tracking
+	std::vector<double> entropy_history;
+	bool entropy_converged = false;
+	if (GB->entropy_convergence) {
+		entropy_history.reserve(GB->max_generations / GB->entropy_check_interval + 1);
+	}
+
 	////////////////////////////////
 	////// Genetic Algorithm ///////
 	////////////////////////////////
@@ -357,6 +370,27 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 		//printf("------fitness stats-------\navg=%8.3f\tmax=%8.3f\n",GB->fit_avg,GB->fit_max);
         //getchar();
 
+		// Entropy convergence check (opt-in via ENTRCNVG config keyword)
+		if (GB->entropy_convergence &&
+		    ((i + 1) % GB->entropy_check_interval == 0)) {
+			std::vector<double> pop_energies(GB->num_chrom);
+			for (int c = 0; c < GB->num_chrom; ++c)
+				pop_energies[c] = (*chrom)[c].evalue;
+			double H = shannon_thermo::compute_shannon_entropy(
+				pop_energies, shannon_thermo::DEFAULT_HIST_BINS);
+			entropy_history.push_back(H);
+
+			if (shannon_thermo::detect_entropy_plateau(
+			        entropy_history, GB->entropy_window,
+			        GB->entropy_rel_threshold)) {
+				printf("Entropy convergence at generation %d "
+				       "(H=%.4f bits, stable for %d checks)\n",
+				       i + 1, H, GB->entropy_window);
+				entropy_converged = true;
+				break;
+			}
+		}
+
 		nrejected = reproduce(FA,GB,VC,(*chrom),(*gene_lim),atoms,residue,(*cleftgrid),
 				      GB->rep_model,GB->mut_rate,GB->cross_rate,print,dice,duplicates,target);
 
@@ -376,6 +410,8 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 	}
 
 	printf("%d ligand conformers rejected\n", nrejected);
+	if (entropy_converged)
+		printf("GA terminated early by entropy convergence\n");
 
 	QuickSort((*chrom),0,GB->num_chrom-1,true);
 
@@ -1834,6 +1870,14 @@ void read_gainputs(FA_Global* FA,GB_Global* GB,int* gen_int,int* sz_part,char fi
 			sscanf(buffer,"%s %d",field,&GB->print_int);
 		}else if(strncmp(buffer,"PRINTRRG",8) == 0){
 			sscanf(buffer,"%s %d",field,&GB->rrg_skip);
+		}else if(strncmp(buffer,"ENTRCNVG",8) == 0){
+			sscanf(buffer,"%s %d",field,&GB->entropy_convergence);
+		}else if(strncmp(buffer,"ENTRCHKI",8) == 0){
+			sscanf(buffer,"%s %d",field,&GB->entropy_check_interval);
+		}else if(strncmp(buffer,"ENTRWIND",8) == 0){
+			sscanf(buffer,"%s %d",field,&GB->entropy_window);
+		}else if(strncmp(buffer,"ENTRTHRS",8) == 0){
+			sscanf(buffer,"%s %lf",field,&GB->entropy_rel_threshold);
 		}else{
 			// ...
 		}

@@ -164,8 +164,14 @@ class TestShannonThermoStack:
         energies = [-10.0, -12.0]
         result = run_shannon_thermo_stack(energies, base_deltaG=-5.0)
         assert result.torsionalVibEntropy == 0.0
-        assert result.entropyContribution == 0.0
-        assert result.deltaG == -5.0
+        # With corrected formula, Shannon conf entropy still contributes
+        # via S_conf = k_B * H * ln(2), so entropyContribution = -T * S_conf
+        H = result.shannonEntropy
+        kB = 0.001987206
+        expected_S = H * kB * math.log(2.0)
+        expected_contrib = -298.15 * expected_S
+        assert abs(result.entropyContribution - expected_contrib) < 1e-8
+        assert abs(result.deltaG - (-5.0 + expected_contrib)) < 1e-8
 
     def test_report_string(self):
         energies = [-10.0, -12.0, -8.0]
