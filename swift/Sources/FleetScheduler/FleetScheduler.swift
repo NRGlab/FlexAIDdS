@@ -590,6 +590,44 @@ public final class iCloudWatcher: @unchecked Sendable {
 }
 #endif
 
+// MARK: - Fleet Aggregation
+
+extension FleetScheduler {
+    /// Aggregate completed results for a job into a unified binding population.
+    ///
+    /// Runs the full FleetAggregator pipeline: deduplication, re-clustering,
+    /// global Boltzmann weighting, and per-mode thermodynamics.
+    ///
+    /// - Parameters:
+    ///   - jobID: The fleet job to aggregate
+    ///   - deduplicationThreshold: Energy difference (kcal/mol) for duplicate detection (default 0.01)
+    ///   - clusterMinSize: Minimum poses per binding mode (default 2)
+    ///   - clusterEnergyBandwidth: Energy bandwidth for density-peak clustering (default 2.0)
+    /// - Returns: Aggregated result, or nil if the job is not yet complete
+    public func aggregateResults(
+        jobID: UUID,
+        deduplicationThreshold: Double = 0.01,
+        clusterMinSize: Int = 2,
+        clusterEnergyBandwidth: Double = 2.0
+    ) -> FleetAggregationResult? {
+        guard isJobComplete(jobID) else { return nil }
+        guard let results = completedResults[jobID], !results.isEmpty else { return nil }
+
+        let temperature = results.first?.temperature ?? 298.15
+        let aggregator = FleetAggregator(temperature: temperature)
+
+        for result in results {
+            aggregator.ingest(result)
+        }
+
+        return aggregator.aggregate(
+            deduplicationThreshold: deduplicationThreshold,
+            clusterMinSize: clusterMinSize,
+            clusterEnergyBandwidth: clusterEnergyBandwidth
+        )
+    }
+}
+
 // MARK: - Errors
 
 public enum FleetError: Error, LocalizedError {

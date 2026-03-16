@@ -74,7 +74,7 @@ let package = Package(
         // Tests
         .testTarget(
             name: "FlexAIDdSTests",
-            dependencies: ["FlexAIDdS", "Intelligence"],
+            dependencies: ["FlexAIDdS", "Intelligence", "FleetScheduler"],
             path: "Tests/FlexAIDdSTests"
         ),
     ]
