@@ -123,6 +123,7 @@ a, button, [role="button"], [role="link"], input, textarea, select {
   --lang-cmake:  #3B6DC9;
   --lang-ts:     #3178C6;
   --lang-cuda:   #7B2D6E;
+  --lang-c:      #555555;
   --lang-other:  #9a8caa;
 
   /* Font */
