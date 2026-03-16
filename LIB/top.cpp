@@ -3,7 +3,10 @@
 #include "Vcontacts.h"
 #include "config_parser.h"
 #include "config_defaults.h"
+#include "Mol2Reader.h"
+#include "CleftDetector.h"
 
+#include <cstring>
 #include <string>
 
 static void print_usage(const char* progname) {
@@ -280,10 +283,6 @@ int main(int argc, char **argv){
 			using O = json::Object;
 			config = json::merge(config, V(O{{"advanced", V(O{{"assume_folded", V(true)}})}}));
 		}
-		if (use_folded) {
-			config = merge_json(config, nlohmann::json{{"advanced", {{"assume_folded", true}}}});
-		}
-
 		// Apply config to FA/GB structs
 		apply_config(config, FA, GB);
 
@@ -293,22 +292,149 @@ int main(int argc, char **argv){
 			FA->intramolecular ? "ON" : "OFF",
 			FA->complf);
 
-		// For now, the new mode sets the config values but still requires
-		// the legacy input files to be generated or provided.
-		// TODO: Phase 2 — direct PDB/MOL2 loading without .inp files.
-		fprintf(stderr, "NOTE: Direct receptor/ligand mode is prepared (config applied).\n");
-		fprintf(stderr, "Input pipeline integration in progress. Use --legacy for full runs.\n");
-		fprintf(stderr, "Config loaded: %s\n", config_path.empty() ? "(defaults)" : config_path.c_str());
-
 		// Set output prefix for end_strfile
 		strncpy(end_strfile, output_prefix.c_str(), MAX_PATH__ - 1);
 		end_strfile[MAX_PATH__ - 1] = '\0';
 		strcpy(FA->rrgfile, end_strfile);
 
+		// GA input file not needed — config already applied to GB
 		dockinp[0] = '\0';
 		gainp[0] = '\0';
 
-		Terminate(0);
+		// ── Direct PDB/MOL2 loading (Phase 2) ───────────────────────
+		std::string receptor_path = argv[1];
+		std::string ligand_path   = argv[2];
+
+		printf("Direct mode: receptor=%s  ligand=%s\n",
+			receptor_path.c_str(), ligand_path.c_str());
+
+		// Default paths for dependency files
+		if (!strcmp(FA->state_path, ""))  strcpy(FA->state_path, FA->base_path);
+		if (!strcmp(FA->temp_path, ""))   strcpy(FA->temp_path, FA->base_path);
+
+		// ── 1. Load interaction matrix (default path) ──
+		char emat[MAX_PATH__];
+		if (!strcmp(FA->dependencies_path, "")) {
+			strcpy(emat, FA->base_path);
+		} else {
+			strcpy(emat, FA->dependencies_path);
+		}
+#ifdef _WIN32
+		strcat(emat, "\\MC_st0r5.2_6.dat");
+#else
+		strcat(emat, "/MC_st0r5.2_6.dat");
+#endif
+		printf("interaction matrix is <%s>\n", emat);
+		read_emat(FA, emat);
+
+		// ── 2. Load type definitions ──
+		char deftyp[MAX_PATH__];
+		if (!strcmp(FA->dependencies_path, "")) {
+			strcpy(deftyp, FA->base_path);
+		} else {
+			strcpy(deftyp, FA->dependencies_path);
+		}
+		if (FA->is_protein) {
+#ifdef _WIN32
+			strcat(deftyp, "\\AMINO.def");
+#else
+			strcat(deftyp, "/AMINO.def");
+#endif
+		} else {
+#ifdef _WIN32
+			strcat(deftyp, "\\NUCLEOTIDES.def");
+#else
+			strcat(deftyp, "/NUCLEOTIDES.def");
+#endif
+		}
+		printf("definition of types is <%s>\n", deftyp);
+
+		// ── 3. Read receptor PDB ──
+		printf("read PDB file <%s>\n", receptor_path.c_str());
+
+		// Check if RNA
+		char pdb_cstr[MAX_PATH__];
+		strncpy(pdb_cstr, receptor_path.c_str(), MAX_PATH__ - 1);
+		pdb_cstr[MAX_PATH__ - 1] = '\0';
+		if (rna_structure(pdb_cstr)) {
+			printf("target molecule is a RNA structure\n");
+			FA->is_protein = 0;
+		}
+
+		// Prepare a cleaned temporary PDB
+		char tmpprotname[MAX_PATH__];
+		srand((unsigned int)time(NULL));
+		int random_num = rand() % 900000 + 100000;
+		snprintf(tmpprotname, MAX_PATH__, "%s/flexaid_tmp_%d.pdb",
+			FA->temp_path, random_num);
+
+		modify_pdb(pdb_cstr, tmpprotname, FA->exclude_het, FA->remove_water, FA->is_protein);
+		read_pdb(FA, &atoms, &residue, tmpprotname);
+		remove(tmpprotname);
+
+		residue[FA->res_cnt].latm[0] = FA->atm_cnt;
+		for (int k2 = 1; k2 <= FA->res_cnt; k2++) {
+			FA->atm_cnt_real += residue[k2].latm[0] - residue[k2].fatm[0] + 1;
+		}
+		calc_center(FA, atoms, residue);
+		if (FA->is_protein) { residue_conect(FA, atoms, residue, deftyp); }
+		assign_types(FA, atoms, residue, deftyp);
+
+		// ── 4. Read ligand (MOL2 or SDF) ──
+		printf("read ligand file <%s>\n", ligand_path.c_str());
+		int lig_ok = read_mol2_ligand(FA, &atoms, &residue, ligand_path.c_str());
+		if (!lig_ok) {
+			fprintf(stderr, "ERROR: Failed to read ligand file: %s\n", ligand_path.c_str());
+			Terminate(8);
+		}
+
+		// ── 5. Assign radii and types ──
+		assign_radii_types(FA, atoms, residue);
+		printf("radii are now assigned\n");
+
+		// ── 6. Auto-detect binding site ──
+		printf("AUTO binding-site detection (CleftDetector) ...\n");
+		sphere* spheres = detect_cleft(atoms, residue, FA->atm_cnt_real, FA->res_cnt);
+		if (spheres == NULL) {
+			fprintf(stderr, "ERROR: AUTO cleft detection found no cavities.\n");
+			Terminate(2);
+		}
+
+		// Write detected spheres for inspection
+		char auto_sph[MAX_PATH__];
+		snprintf(auto_sph, MAX_PATH__, "%s/auto_cleft.sph", FA->temp_path);
+		write_cleft_spheres(spheres, auto_sph);
+
+		strcpy(FA->rngopt, "locclf");
+		cleftgrid = generate_grid(FA, spheres, atoms, residue);
+		calc_cleftic(FA, cleftgrid);
+
+		// Free spheres linked list
+		while (spheres != NULL) {
+			sphere* prev = spheres->prev;
+			free(spheres);
+			spheres = prev;
+		}
+
+		// ── 7. Set up optimization vector ──
+		int opt_dummy[2] = {0, 0};
+		add2_optimiz_vec(FA, atoms, residue, opt_dummy, ' ', "");
+		add2_optimiz_vec(FA, atoms, residue, opt_dummy, ' ', "SC");
+		add2_optimiz_vec(FA, atoms, residue, opt_dummy, ' ', "NM");
+
+		// ── 8. IC bounds ──
+		ic_bounds(FA, FA->rngopt);
+
+		// Validate grid
+		if (FA->translational && FA->num_grd == 1) {
+			fprintf(stderr, "ERROR: the binding-site has no anchor points\n");
+			Terminate(2);
+		}
+
+		update_optres(atoms, residue, FA->atm_cnt, FA->optres, FA->num_optres);
+
+		printf("Direct loading complete: %d atoms, %d residues, %d grid points\n",
+			FA->atm_cnt, FA->res_cnt, FA->num_grd);
 	}
 
 	//printf("END FILE:<%s>\n",end_strfile);
@@ -359,8 +485,10 @@ int main(int argc, char **argv){
 	
 	/////////////////////////////////////////////////////////////////////////////////
   
-	printf("Reading input (%s)...\n",dockinp);
-	read_input(FA,&atoms,&residue,&rotamer,&cleftgrid,dockinp);
+	if (legacy_mode) {
+		printf("Reading input (%s)...\n",dockinp);
+		read_input(FA,&atoms,&residue,&rotamer,&cleftgrid,dockinp);
+	}
 	
 	// memory allocation and initialization of VC struct
 	if (strcmp(FA->complf,"VCT")==0)
@@ -506,7 +634,11 @@ int main(int argc, char **argv){
 		sprintf(tmpremark,"REMARK [%8.3f]\n",FA->opt_par[i]);
 		strcat(remark,tmpremark);
 	}
-	sprintf(tmpremark,"REMARK inputs: %s & %s",dockinp,gainp);
+	if (legacy_mode) {
+		sprintf(tmpremark,"REMARK inputs: %s & %s",dockinp,gainp);
+	} else {
+		sprintf(tmpremark,"REMARK inputs: direct mode");
+	}
 	strcat(remark,tmpremark);
 	
 	if (FA->htpmode == false) {write_pdb(FA,atoms,residue,tmp_end_strfile,remark);}
