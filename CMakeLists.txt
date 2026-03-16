@@ -37,6 +37,7 @@ option(FLEXAIDS_USE_AVX512  "Enable AVX-512 SIMD acceleration"    OFF)
 option(FLEXAIDS_USE_OPENMP  "Enable OpenMP thread parallelism"    ON)
 option(FLEXAIDS_USE_EIGEN   "Enable Eigen3 vectorised linear algebra" ON)
 option(FLEXAIDS_USE_256_MATRIX "Enable 256×256 soft contact matrix" ON)
+option(FLEXAIDS_USE_MPI     "Enable MPI distributed parallel docking" OFF)
 option(BUILD_PYTHON_BINDINGS "Build Python bindings via pybind11" OFF)
 
 # ─── platform / SIMD helpers ───────────────────────────────────────────────
@@ -281,6 +282,10 @@ target_sources(FlexAID PRIVATE
         LIB/config_parser.cpp
         # ── Unified runtime hardware dispatch ──
         LIB/HardwareDispatch.cpp
+        # ── Parallel grid-decomposed docking ──
+        LIB/GridDecomposer.cpp
+        LIB/SharedPosePool.cpp
+        LIB/ParallelDock.cpp
 )
 
 target_include_directories(FlexAID PRIVATE
@@ -321,6 +326,18 @@ target_link_libraries(FlexAID PRIVATE nlohmann_json::nlohmann_json)
 # ─── OpenMP link ────────────────────────────────────────────────────────
 if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
     target_link_libraries(FlexAID PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+# ─── MPI (optional, for distributed parallel docking) ──────────────────
+if(FLEXAIDS_USE_MPI)
+    find_package(MPI REQUIRED)
+    target_sources(FlexAID PRIVATE LIB/MPITransport.cpp)
+    target_link_libraries(FlexAID PRIVATE MPI::MPI_CXX)
+    target_compile_definitions(FlexAID PRIVATE FLEXAIDS_USE_MPI)
+    message(STATUS "MPI enabled — distributed parallel docking active")
+else()
+    # No-MPI stubs (single-rank fallback)
+    target_sources(FlexAID PRIVATE LIB/MPITransport.cpp)
 endif()
 
 # ─── CUDA sources ───────────────────────────────────────────────────────
@@ -1181,7 +1198,29 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME CubeGridTests COMMAND test_cube_grid)
 
-    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_hardware_detect_dispatch, test_tencom_diff, test_ptm_attachment, test_gaboom, test_vcontacts, test_cleft_cavity, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect, test_binding_mode_statmech, test_binding_mode_advanced, test_ga_core, test_ga_validation, test_soft_contact_matrix, test_cube_grid")
+    # test_parallel_dock — GridDecomposer, SharedPosePool, StatMechEngine merge tests
+    add_executable(test_parallel_dock
+        tests/test_parallel_dock.cpp
+        LIB/GridDecomposer.cpp
+        LIB/SharedPosePool.cpp
+        LIB/statmech.cpp
+        LIB/hardware_dispatch.cpp
+        LIB/hardware_detect.cpp
+    )
+    target_include_directories(test_parallel_dock PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_link_libraries(test_parallel_dock PRIVATE GTest::gtest GTest::gtest_main)
+    if(MSVC)
+        target_compile_options(test_parallel_dock PRIVATE /O2)
+    else()
+        target_compile_options(test_parallel_dock PRIVATE -O2)
+    endif()
+    if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+        target_link_libraries(test_parallel_dock PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    flexaids_configure_msvc_test(test_parallel_dock)
+    add_test(NAME ParallelDockTests COMMAND test_parallel_dock)
+
+    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_hardware_detect_dispatch, test_tencom_diff, test_ptm_attachment, test_gaboom, test_vcontacts, test_cleft_cavity, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect, test_binding_mode_statmech, test_binding_mode_advanced, test_ga_core, test_ga_validation, test_soft_contact_matrix, test_cube_grid, test_parallel_dock")
 endif()
 
 # ─── Swift Bridge (macOS only) ────────────────────────────────────────────
