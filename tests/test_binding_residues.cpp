@@ -271,3 +271,127 @@ TEST(BindingResidues, PrintDoesNotCrash) {
     binding_residues::print_key_residues(results, 5);
     binding_residues::print_key_residues({}, 5);
 }
+
+// ===========================================================================
+// AUTO-FLEX TESTS
+// ===========================================================================
+
+// Helper to create a minimal FA_Global for auto-flex testing
+static FA_Global make_test_fa(float* mif_energies, int mif_count, int atm_cnt) {
+    FA_Global fa;
+    memset(&fa, 0, sizeof(FA_Global));
+    fa.mif_energies = mif_energies;
+    fa.mif_count = mif_count;
+    fa.atm_cnt_real = atm_cnt;
+    fa.autoflex_enabled = 1;
+    fa.autoflex_max = 5;
+    fa.MIN_FLEX_RESIDUE = 10;
+    fa.flex_res = nullptr;
+    fa.nflxsc = 0;
+    // num_grd must match grid size
+    return fa;
+}
+
+TEST(AutoFlex, AddsASPAsFlexible) {
+    auto ts = make_binding_site();
+    auto fa = make_test_fa(ts.mif_energies.data(), 5,
+                           static_cast<int>(ts.atoms.size()));
+    fa.num_grd = static_cast<int>(ts.grid.size());
+
+    // Mark all residues as protein type
+    for (auto& r : ts.residues) r.type = 0;
+
+    int added = binding_residues::add_key_residues_as_flexible(
+        &fa, ts.grid.data(), ts.atoms.data(), ts.residues.data(),
+        5, 100.0f, 4.5f);
+
+    EXPECT_GE(added, 1);
+    EXPECT_EQ(fa.nflxsc, added);
+    // ASP should be first (most favorable)
+    EXPECT_STREQ(fa.flex_res[0].name, "ASP");
+    EXPECT_EQ(fa.flex_res[0].num, 42);
+    EXPECT_EQ(fa.flex_res[0].chn, 'A');
+    EXPECT_GT(fa.flex_res[0].prob, 0.0f);  // set_intprob should have set it
+
+    free(fa.flex_res);
+}
+
+TEST(AutoFlex, SkipsGLYALAPRO) {
+    auto ts = make_binding_site();
+    // Change ASP to GLY
+    strncpy(ts.residues[0].name, "GLY", 3);
+    // Change PHE to ALA
+    strncpy(ts.residues[2].name, "ALA", 3);
+
+    auto fa = make_test_fa(ts.mif_energies.data(), 5,
+                           static_cast<int>(ts.atoms.size()));
+    fa.num_grd = static_cast<int>(ts.grid.size());
+    for (auto& r : ts.residues) r.type = 0;
+
+    int added = binding_residues::add_key_residues_as_flexible(
+        &fa, ts.grid.data(), ts.atoms.data(), ts.residues.data(),
+        5, 100.0f, 4.5f);
+
+    // GLY and ALA should be skipped
+    EXPECT_EQ(added, 0);
+    free(fa.flex_res);
+}
+
+TEST(AutoFlex, SkipsAlreadyFlexible) {
+    auto ts = make_binding_site();
+    auto fa = make_test_fa(ts.mif_energies.data(), 5,
+                           static_cast<int>(ts.atoms.size()));
+    fa.num_grd = static_cast<int>(ts.grid.size());
+    for (auto& r : ts.residues) r.type = 0;
+
+    // Pre-add ASP as flexible
+    fa.flex_res = static_cast<flxsc*>(calloc(10, sizeof(flxsc)));
+    fa.nflxsc = 1;
+    strncpy(fa.flex_res[0].name, "ASP", 3);
+    fa.flex_res[0].inum = 0;  // residue index 0 = ASP
+
+    int added = binding_residues::add_key_residues_as_flexible(
+        &fa, ts.grid.data(), ts.atoms.data(), ts.residues.data(),
+        5, 100.0f, 4.5f);
+
+    // ASP should be skipped (already flexible), PHE should be added
+    EXPECT_GE(added, 1);
+    // PHE should be the newly added one
+    bool found_phe = false;
+    for (int i = 1; i < fa.nflxsc; ++i) {
+        if (strcmp(fa.flex_res[i].name, "PHE") == 0) found_phe = true;
+    }
+    EXPECT_TRUE(found_phe);
+
+    free(fa.flex_res);
+}
+
+TEST(AutoFlex, RespectsMaxLimit) {
+    auto ts = make_binding_site();
+    auto fa = make_test_fa(ts.mif_energies.data(), 5,
+                           static_cast<int>(ts.atoms.size()));
+    fa.num_grd = static_cast<int>(ts.grid.size());
+    for (auto& r : ts.residues) r.type = 0;
+
+    int added = binding_residues::add_key_residues_as_flexible(
+        &fa, ts.grid.data(), ts.atoms.data(), ts.residues.data(),
+        1,  // max 1
+        100.0f, 4.5f);
+
+    EXPECT_EQ(added, 1);
+    EXPECT_EQ(fa.nflxsc, 1);
+
+    free(fa.flex_res);
+}
+
+TEST(AutoFlex, DisabledWhenNoMIF) {
+    auto ts = make_binding_site();
+    auto fa = make_test_fa(nullptr, 0,
+                           static_cast<int>(ts.atoms.size()));
+    fa.num_grd = static_cast<int>(ts.grid.size());
+
+    int added = binding_residues::add_key_residues_as_flexible(
+        &fa, ts.grid.data(), ts.atoms.data(), ts.residues.data(), 5);
+
+    EXPECT_EQ(added, 0);
+}

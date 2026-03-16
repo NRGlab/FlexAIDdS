@@ -503,6 +503,10 @@ struct FA_Global_struct{
 	int*    reflig_nearest_grid;     // K nearest grid point indices (1-based)
 	int     reflig_nearest_count;    // actual count found
 	int     reflig_hetatm_fallback;  // 1 = use INPLIG HETATM as fallback (default 1)
+
+	// ── Auto-Flex Binding Residues ──
+	int     autoflex_enabled;        // 1 = auto-flex key binding residues (default 1)
+	int     autoflex_max;            // max residues to auto-flex (default 5)
 };
 typedef struct FA_Global_struct FA_Global;
 

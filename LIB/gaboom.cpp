@@ -1897,6 +1897,10 @@ void read_gainputs(FA_Global* FA,GB_Global* GB,int* gen_int,int* sz_part,char fi
 			sscanf(buffer,"%*s %d", &FA->reflig_k_nearest);
 		}else if(strncmp(buffer,"REFLGHTM",8) == 0){
 			sscanf(buffer,"%*s %d", &FA->reflig_hetatm_fallback);
+		}else if(strncmp(buffer,"AUTOFLXE",8) == 0){
+			sscanf(buffer,"%*s %d", &FA->autoflex_enabled);
+		}else if(strncmp(buffer,"AUTOFLXN",8) == 0){
+			sscanf(buffer,"%*s %d", &FA->autoflex_max);
 		}else{
 			// ...
 		}

@@ -200,4 +200,88 @@ inline void print_key_residues(const std::vector<ResidueContribution>& residues,
     }
 }
 
+// ── Auto-flex: add key binding residues to FA->flex_res[] ──────────────────
+//
+// Adds the top-N most favorable binding residues as flexible side-chains.
+// Skips GLY, ALA, PRO (no rotameric freedom), ligand residues, and
+// residues already in flex_res[]. Returns count of residues added.
+//
+// Call AFTER compute_mif_and_reflig() and BEFORE build_rotamers()/add2_optimiz_vec("SC").
+
+inline int add_key_residues_as_flexible(
+    FA_Global* FA,
+    const gridpoint* cleftgrid,
+    const atom* atoms,
+    const resid* residues,
+    int max_auto_flex = 5,
+    float top_k_percent = 30.0f,
+    float contact_cutoff = 4.5f)
+{
+    if (!FA->mif_energies || FA->mif_count == 0 || max_auto_flex <= 0) return 0;
+
+    // Identify key residues
+    auto key_res = identify_key_residues_from_fa(
+        FA, cleftgrid, atoms, residues, top_k_percent, contact_cutoff);
+
+    if (key_res.empty()) return 0;
+
+    // Residues to skip (no side-chain rotamers)
+    auto is_skip_residue = [](const char* name) {
+        return std::strcmp(name, "GLY") == 0 ||
+               std::strcmp(name, "ALA") == 0 ||
+               std::strcmp(name, "PRO") == 0;
+    };
+
+    // Check if residue is already in flex_res[]
+    auto already_flexible = [&](int res_index) {
+        for (int i = 0; i < FA->nflxsc; ++i) {
+            if (FA->flex_res[i].inum == res_index) return true;
+        }
+        return false;
+    };
+
+    // Ensure flex_res array is allocated
+    if (!FA->flex_res) {
+        FA->MIN_FLEX_RESIDUE = std::max(FA->MIN_FLEX_RESIDUE, max_auto_flex + 5);
+        FA->flex_res = static_cast<flxsc*>(
+            calloc(static_cast<size_t>(FA->MIN_FLEX_RESIDUE), sizeof(flxsc)));
+        if (!FA->flex_res) return 0;
+    }
+
+    int added = 0;
+    for (const auto& rc : key_res) {
+        if (added >= max_auto_flex) break;
+        if (is_skip_residue(rc.name)) continue;
+        if (residues[rc.res_index].type != 0) continue;  // skip ligand residues
+        if (already_flexible(rc.res_index)) continue;
+
+        // Grow flex_res if needed
+        if (FA->nflxsc >= FA->MIN_FLEX_RESIDUE) {
+            FA->MIN_FLEX_RESIDUE += 5;
+            FA->flex_res = static_cast<flxsc*>(
+                realloc(FA->flex_res,
+                        static_cast<size_t>(FA->MIN_FLEX_RESIDUE) * sizeof(flxsc)));
+            if (!FA->flex_res) return added;
+            std::memset(&FA->flex_res[FA->MIN_FLEX_RESIDUE - 5], 0, 5 * sizeof(flxsc));
+        }
+
+        // Add to flex_res
+        flxsc& fr = FA->flex_res[FA->nflxsc];
+        std::strncpy(fr.name, rc.name, 3);
+        fr.name[3] = '\0';
+        fr.chn = rc.chain;
+        fr.num = rc.number;
+        fr.inum = rc.res_index;
+        set_intprob(&fr);
+
+        FA->nflxsc++;
+        added++;
+
+        printf("AUTOFLEX: %s %d:%c added as flexible (MIF=%.2f, %d contacts)\n",
+               rc.name, rc.number, rc.chain, rc.mif_score, rc.contact_count);
+    }
+
+    return added;
+}
+
 } // namespace binding_residues

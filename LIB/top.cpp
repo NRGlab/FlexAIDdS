@@ -78,6 +78,8 @@ int main(int argc, char **argv){
 	FA->reflig_seed_fraction = 0.25f;
 	FA->reflig_k_nearest = 10;
 	FA->reflig_hetatm_fallback = 1;
+	FA->autoflex_enabled = 1;  // auto-flex key binding residues by default
+	FA->autoflex_max = 5;
 
 	FA->contacts = (int*)malloc(100000*sizeof(int));
 	if(FA->contacts == NULL){

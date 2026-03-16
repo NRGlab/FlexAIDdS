@@ -5,6 +5,7 @@
 #include "MIFGrid.h"
 #include "RefLigSeed.h"
 #include "CavityDetect/SpatialGrid.h"
+#include "BindingResidues.h"
 #include <vector>
 #include <algorithm>
 
@@ -437,11 +438,20 @@ void read_input(FA_Global* FA,atom** atoms, resid** residue,rot** rotamer,gridpo
   
 	//////////////////////////////////////////////
 
-	if(nflexsc && FA->is_protein){
-		
-		read_flexscfile(FA,*residue,rotamer,flexscline,nflexsc,rotlib_file,rotobs_file);
+	if((nflexsc || FA->autoflex_enabled) && FA->is_protein){
 
-		
+		if(nflexsc){
+			read_flexscfile(FA,*residue,rotamer,flexscline,nflexsc,rotlib_file,rotobs_file);
+		}else{
+			// Auto-flex only: allocate rotamer array (read_flexscfile normally does this)
+			(*rotamer) = (rot*)malloc(FA->MIN_ROTAMER_LIBRARY_SIZE*sizeof(rot));
+			if(!(*rotamer)){
+				fprintf(stderr,"ERROR: memory allocation error for rotamer\n");
+				Terminate(2);
+			}
+			memset((*rotamer),0,FA->MIN_ROTAMER_LIBRARY_SIZE*sizeof(rot));
+		}
+
 		if (FA->rotobs) {
 
 			// use rotamers found in bound conformations (hap2db)
@@ -450,37 +460,37 @@ void read_input(FA_Global* FA,atom** atoms, resid** residue,rot** rotamer,gridpo
 			}else{
 				strcpy(rotobs_file,FA->dependencies_path);
 			}
-            
+
 #ifdef _WIN32
 			strcat(rotobs_file,"\\rotobs.lst");
 #else
 			strcat(rotobs_file,"/rotobs.lst");
 #endif
-            
+
 			printf("read rotamer observations <%s>\n",rotobs_file);
 			read_rotobs(FA,rotamer,rotobs_file);
 		}else{
-			
+
 			// use penultimate rotamer library instances
 			if(!strcmp(FA->dependencies_path,"")){
 				strcpy(rotlib_file,FA->base_path);
 			}else{
 				strcpy(rotlib_file,FA->dependencies_path);
 			}
-            
+
 #ifdef _WIN32
 			strcat(rotlib_file,"\\Lovell_LIB.dat");
 #else
 			strcat(rotlib_file,"/Lovell_LIB.dat");
 #endif
-            
+
 			printf("read rotamer library <%s>\n",rotlib_file);
 			read_rotlib(FA,rotamer,rotlib_file);
 		}
-    
+
 		if(FA->nflxsc > 0 && FA->rotlibsize > 0){
-			build_rotamers(FA,atoms,*residue,*rotamer); 
-			//build_close(FA,residue,atoms);         
+			build_rotamers(FA,atoms,*residue,*rotamer);
+			//build_close(FA,residue,atoms);
 		}
 	}
 
@@ -630,6 +640,39 @@ void read_input(FA_Global* FA,atom** atoms, resid** residue,rot** rotamer,gridpo
 		//printf("Add2 optimiz vector...\n");
 		add2_optimiz_vec(FA,*atoms,*residue,opt,chain,"");
 
+	}
+
+	// ── Auto-flex: add key binding residues as flexible side-chains ──
+	if (FA->autoflex_enabled && FA->mif_energies && FA->mif_count > 0) {
+		int nflxsc_before = FA->nflxsc;
+		int n_added = binding_residues::add_key_residues_as_flexible(
+			FA, *cleftgrid, *atoms, *residue, FA->autoflex_max);
+
+		// Build rotamers for newly added flexible residues only
+		if (n_added > 0 && FA->rotlibsize > 0) {
+			int saved_nflxsc = FA->nflxsc;
+			int saved_nflxsc_real = FA->nflxsc_real;
+			flxsc* saved_flex_res = FA->flex_res;
+
+			// Point flex_res to only the new entries so build_rotamers
+			// processes only the auto-flexed residues
+			FA->flex_res = &saved_flex_res[nflxsc_before];
+			FA->nflxsc = n_added;
+
+			build_rotamers(FA, atoms, *residue, *rotamer);
+
+			// Accumulate nflxsc_real from both batches
+			int new_nflxsc_real = FA->nflxsc_real;
+
+			// Restore full flex_res array
+			FA->flex_res = saved_flex_res;
+			FA->nflxsc = saved_nflxsc;
+			FA->nflxsc_real = saved_nflxsc_real + new_nflxsc_real;
+
+			printf("AUTOFLEX: built rotamers for %d auto-flexed residues "
+			       "(%d with rotamers, total flexible: %d)\n",
+			       n_added, new_nflxsc_real, FA->nflxsc);
+		}
 	}
 
 	add2_optimiz_vec(FA,*atoms,*residue,opt,chain,"SC");

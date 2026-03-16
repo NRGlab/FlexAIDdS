@@ -945,6 +945,7 @@ if(BUILD_TESTING)
     # test_binding_residues — Key binding-site residue identification tests
     add_executable(test_binding_residues
         tests/test_binding_residues.cpp
+        LIB/set_intprob.cpp
     )
     target_include_directories(test_binding_residues PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB
