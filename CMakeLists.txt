@@ -1064,7 +1064,19 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME GAValidationTests COMMAND test_ga_validation)
 
-    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_hardware_detect_dispatch, test_tencom_diff, test_ptm_attachment, test_gaboom, test_vcontacts, test_cleft_cavity, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect, test_binding_mode_statmech, test_binding_mode_advanced, test_ga_core, test_ga_validation")
+    # ── Mol2Reader / SdfReader tests ──────────────────────────────────────
+    add_executable(test_mol2_sdf_reader
+        tests/test_mol2_sdf_reader.cpp
+        LIB/Mol2Reader.cpp
+        LIB/SdfReader.cpp
+    )
+    target_include_directories(test_mol2_sdf_reader PRIVATE LIB)
+    target_link_libraries(test_mol2_sdf_reader PRIVATE GTest::gtest_main)
+    target_compile_features(test_mol2_sdf_reader PRIVATE cxx_std_20)
+    flexaids_configure_simd(test_mol2_sdf_reader)
+    add_test(NAME Mol2SdfReaderTests COMMAND test_mol2_sdf_reader)
+
+    message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_hardware_detect_dispatch, test_tencom_diff, test_ptm_attachment, test_gaboom, test_vcontacts, test_cleft_cavity, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect, test_binding_mode_statmech, test_binding_mode_advanced, test_ga_core, test_ga_validation, test_mol2_sdf_reader")
 endif()
 
 # ─── Swift Bridge (macOS only) ────────────────────────────────────────────
