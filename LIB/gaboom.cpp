@@ -2,11 +2,15 @@
 #include "Vcontacts.h"
 #include "fileio.h"
 #include "hardware_dispatch.h"
+#include "MIFGrid.h"
+#include "CavityDetect/SpatialGrid.h"
 
 #include <random>
 #include <functional>
 #include <cstdint>
 #include <vector>
+#include <algorithm>
+#include <span>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -321,6 +325,27 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 				strcat(gridfile,gridfilename);
 
 				write_grid(FA,(*cleftgrid),gridfile);
+			}
+
+			// Recompute MIF for adapted grid
+			if (FA->mif_enabled || FA->grid_prio_percent < 100.0f) {
+				std::vector<atom> protein_atoms(atoms, atoms + FA->atm_cnt_real);
+				cavity_detect::SpatialGrid sg;
+				sg.build(protein_atoms);
+				auto mif = mif::compute_mif(*cleftgrid, FA->num_grd,
+				                             atoms, FA->atm_cnt_real, sg);
+				free(FA->mif_energies); free(FA->mif_sorted); free(FA->mif_cdf);
+				FA->mif_count = static_cast<int>(mif.sorted_indices.size());
+				FA->mif_energies = static_cast<float*>(
+				    malloc(mif.energies.size() * sizeof(float)));
+				FA->mif_sorted = static_cast<int*>(
+				    malloc(mif.sorted_indices.size() * sizeof(int)));
+				std::copy_n(mif.energies.data(), mif.energies.size(), FA->mif_energies);
+				std::copy_n(mif.sorted_indices.data(), mif.sorted_indices.size(), FA->mif_sorted);
+				mif::build_sampling_cdf(mif, FA->mif_temperature);
+				FA->mif_cdf = static_cast<double*>(
+				    malloc(mif.cdf.size() * sizeof(double)));
+				std::copy_n(mif.cdf.data(), mif.cdf.size(), FA->mif_cdf);
 			}
 
 			validate_dups(GB, (*gene_lim), GB->num_genes);
@@ -1468,6 +1493,30 @@ void populate_chromosomes(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* 
 		while(i<GB->num_chrom){
 			while(1){
 				generate_random_individual(FA,GB,atoms,chrom[i].genes,gene_lim,dice,0,GB->num_genes);
+
+				// ── MIF-weighted or RefLig seeding override for gene 0 ──
+				if (FA->reflig_nearest_count > 0 &&
+				    i < popoffset + static_cast<int>(FA->reflig_seed_fraction *
+				        static_cast<float>(GB->num_chrom - popoffset))) {
+					// RefLig seeding: distribute K nearest grid points across seeded fraction
+					int k = std::abs(chrom[i].genes[0].to_int32) % FA->reflig_nearest_count;
+					int grid_idx = FA->reflig_nearest_grid[k];
+					chrom[i].genes[0].to_ic = static_cast<double>(grid_idx);
+					chrom[i].genes[0].to_int32 = ictogene(&gene_lim[0],
+					                                       static_cast<double>(grid_idx));
+				} else if (FA->mif_enabled && FA->mif_cdf && FA->mif_count > 0) {
+					// MIF-weighted Boltzmann sampling
+					double u = RandomDouble(dice());
+					auto it = std::lower_bound(FA->mif_cdf,
+					                           FA->mif_cdf + FA->mif_count, u);
+					int idx = static_cast<int>(std::distance(FA->mif_cdf, it));
+					idx = std::clamp(idx, 0, FA->mif_count - 1);
+					int grid_idx = FA->mif_sorted[idx];
+					chrom[i].genes[0].to_ic = static_cast<double>(grid_idx);
+					chrom[i].genes[0].to_int32 = ictogene(&gene_lim[0],
+					                                       static_cast<double>(grid_idx));
+				}
+
 				sig = generate_sig(chrom[i].genes,GB->num_genes);
 				if(GB->duplicates || duplicates.find(sig) == duplicates.end()){
 					break;
@@ -1834,6 +1883,20 @@ void read_gainputs(FA_Global* FA,GB_Global* GB,int* gen_int,int* sz_part,char fi
 			sscanf(buffer,"%s %d",field,&GB->print_int);
 		}else if(strncmp(buffer,"PRINTRRG",8) == 0){
 			sscanf(buffer,"%s %d",field,&GB->rrg_skip);
+		}else if(strncmp(buffer,"MIFWEIGH",8) == 0){
+			sscanf(buffer,"%*s %d", &FA->mif_enabled);
+		}else if(strncmp(buffer,"MIFTEMPR",8) == 0){
+			sscanf(buffer,"%*s %f", &FA->mif_temperature);
+		}else if(strncmp(buffer,"GRIDPRIO",8) == 0){
+			sscanf(buffer,"%*s %f", &FA->grid_prio_percent);
+		}else if(strncmp(buffer,"REFLGFIL",8) == 0){
+			sscanf(buffer,"%*s %s", FA->reflig_file);
+		}else if(strncmp(buffer,"REFLGSED",8) == 0){
+			sscanf(buffer,"%*s %f", &FA->reflig_seed_fraction);
+		}else if(strncmp(buffer,"REFLGKNN",8) == 0){
+			sscanf(buffer,"%*s %d", &FA->reflig_k_nearest);
+		}else if(strncmp(buffer,"REFLGHTM",8) == 0){
+			sscanf(buffer,"%*s %d", &FA->reflig_hetatm_fallback);
 		}else{
 			// ...
 		}

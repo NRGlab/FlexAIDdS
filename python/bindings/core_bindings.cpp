@@ -15,6 +15,7 @@
 #include "../../LIB/BindingMode.h"
 #endif
 #include "../../LIB/encom.h"
+#include "../../LIB/Spectrophore.h"
 
 namespace py = pybind11;
 using namespace statmech;
@@ -336,4 +337,64 @@ PYBIND11_MODULE(_core, m) {
             &encom::ENCoMEngine::free_energy_with_vibrations,
             py::arg("F_electronic"), py::arg("S_vib_kcal_mol_K"), py::arg("temperature_K"),
             "F_total = F_elec − T·S_vib  (kcal/mol)");
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Spectrophore — 144-float 3D fingerprint
+    // ──────────────────────────────────────────────────────────────────────
+
+    m.attr("SPECTROPHORE_DESCRIPTOR_SIZE") = spectrophore::DESCRIPTOR_SIZE;
+    m.attr("SPECTROPHORE_N_ANGULAR") = spectrophore::N_ANGULAR;
+    m.attr("SPECTROPHORE_N_RADIAL") = spectrophore::N_RADIAL;
+    m.attr("SPECTROPHORE_N_PROPERTIES") = spectrophore::N_PROPERTIES;
+
+    py::class_<spectrophore::Spectrophore>(m, "Spectrophore",
+        "144-float 3D molecular fingerprint (4 properties × 12 angular × 3 radial)")
+        .def(py::init<>())
+        .def("tanimoto", &spectrophore::Spectrophore::tanimoto,
+            py::arg("other"),
+            "Tanimoto similarity to another Spectrophore (0–1)")
+        .def("euclidean", &spectrophore::Spectrophore::euclidean,
+            py::arg("other"),
+            "Euclidean distance to another Spectrophore")
+        .def_property_readonly("values", [](const spectrophore::Spectrophore& s) {
+            return py::array_t<float>({spectrophore::DESCRIPTOR_SIZE},
+                                      {sizeof(float)},
+                                      s.values, py::cast(s));
+        }, "144-element descriptor array (read-only view)")
+        .def_property_readonly("centroid", [](const spectrophore::Spectrophore& s) {
+            return py::array_t<float>({3}, {sizeof(float)}, s.centroid, py::cast(s));
+        }, "3D centroid used for computation");
+
+    py::class_<spectrophore::SimpleAtom>(m, "SpectrophoreAtom",
+        "Lightweight atom for spectrophore computation")
+        .def(py::init<>())
+        .def(py::init([](float x, float y, float z, float radius, float charge) {
+            return spectrophore::SimpleAtom{x, y, z, radius, charge};
+        }), py::arg("x"), py::arg("y"), py::arg("z"),
+            py::arg("radius") = 1.7f, py::arg("charge") = 0.0f)
+        .def_readwrite("x", &spectrophore::SimpleAtom::x)
+        .def_readwrite("y", &spectrophore::SimpleAtom::y)
+        .def_readwrite("z", &spectrophore::SimpleAtom::z)
+        .def_readwrite("radius", &spectrophore::SimpleAtom::radius)
+        .def_readwrite("charge", &spectrophore::SimpleAtom::charge);
+
+    m.def("compute_spectrophore_from_atoms",
+        [](py::array_t<float> coords, py::array_t<float> radii,
+           py::array_t<float> charges, py::array_t<float> center) {
+            auto c = coords.unchecked<2>();
+            auto r = radii.unchecked<1>();
+            auto q = charges.unchecked<1>();
+            auto ctr = center.unchecked<1>();
+            int n = static_cast<int>(c.shape(0));
+            std::vector<spectrophore::SimpleAtom> atoms(static_cast<size_t>(n));
+            for (int i = 0; i < n; ++i) {
+                atoms[static_cast<size_t>(i)] = {c(i, 0), c(i, 1), c(i, 2),
+                                                  r(i), q(i)};
+            }
+            float cen[3] = {ctr(0), ctr(1), ctr(2)};
+            return spectrophore::compute_from_atoms(atoms.data(), n, cen);
+        },
+        py::arg("coords"), py::arg("radii"), py::arg("charges"),
+        py::arg("center"),
+        "Compute spectrophore from atom coordinates, radii, and charges");
 }

@@ -486,6 +486,23 @@ struct FA_Global_struct{
 	int    MIN_FLEX_RESIDUE;
 	int    MIN_NORMAL_GRID_POINTS;
 	int    MIN_CONSTRAINTS;
+
+	// ── MIF + Grid Prioritization ──
+	float*  mif_energies;          // parallel array [num_grd], MIF energy per grid point
+	int*    mif_sorted;            // grid indices sorted by energy (ascending)
+	double* mif_cdf;               // Boltzmann CDF for sampling
+	int     mif_count;             // entries in sorted/cdf (= num_grd - 1)
+	int     mif_enabled;           // 1 if MIF-weighted init is active
+	float   mif_temperature;       // Boltzmann temperature (default 300K)
+	float   grid_prio_percent;     // top-K% to keep (default 100 = no filtering)
+
+	// ── Reference Ligand Seeding ──
+	char    reflig_file[MAX_PATH__]; // path to reference ligand PDB/MOL2
+	float   reflig_seed_fraction;    // fraction of population to seed (default 0.25)
+	int     reflig_k_nearest;        // K nearest grid points (default 10)
+	int*    reflig_nearest_grid;     // K nearest grid point indices (1-based)
+	int     reflig_nearest_count;    // actual count found
+	int     reflig_hetatm_fallback;  // 1 = use INPLIG HETATM as fallback (default 1)
 };
 typedef struct FA_Global_struct FA_Global;
 
