@@ -3,11 +3,21 @@
 // Tests that IntelligencePipeline correctly orchestrates all rule-based
 // features, isolates failures, and produces correct aggregate results.
 //
+// NOTE: The FlexAIDdSTests test target in Package.swift currently depends only
+// on "FlexAIDdS", not "Intelligence". The @testable import Intelligence below
+// will fail to build until the test target dependency is updated in Package.swift:
+//
+//   .testTarget(
+//       name: "FlexAIDdSTests",
+//       dependencies: ["FlexAIDdS", "Intelligence"],
+//       path: "Tests/FlexAIDdSTests"
+//   )
+//
 // Copyright 2024-2026 Louis-Philippe Morency / NRGlab, Universite de Montreal
 // SPDX-License-Identifier: Apache-2.0
 
 import XCTest
-@testable import FlexAIDdS
+import FlexAIDdS
 @testable import Intelligence
 
 final class IntelligencePipelineTests: XCTestCase {
@@ -77,18 +87,23 @@ final class IntelligencePipelineTests: XCTestCase {
 
     func testPipelineGeneratesModeNarrative() {
         let pipeline = IntelligencePipeline()
-        let result = pipeline.analyze(dockingResult: makeDockingResult())
+        let result = pipeline.analyze(dockingResult: makeDockingResult(modeCount: 2))
 
-        XCTAssertNotNil(result.modeNarrative)
-        XCTAssertEqual(result.modeNarrative?.modeDescriptions.count, 2)
+        XCTAssertNotNil(result.modeNarrative, "Pipeline should produce a mode narrative for non-empty modes")
+        XCTAssertEqual(result.modeNarrative?.modeDescriptions.count, 2,
+                       "Mode narrative should contain one description per binding mode")
         XCTAssertTrue(result.errors.isEmpty, "No errors expected: \(result.errors)")
     }
 
     func testPipelineGeneratesPoseQuality() {
         let pipeline = IntelligencePipeline()
-        let result = pipeline.analyze(dockingResult: makeDockingResult())
+        let docking = makeDockingResult(modeCount: 2)
+        let result = pipeline.analyze(dockingResult: docking)
 
-        XCTAssertFalse(result.poseQualityReports.isEmpty, "Should have pose quality reports")
+        XCTAssertFalse(result.poseQualityReports.isEmpty,
+                       "Should produce pose quality reports when modes have poses")
+        XCTAssertLessThanOrEqual(result.poseQualityReports.count, 3,
+                                 "Pipeline evaluates at most 3 modes for pose quality")
     }
 
     func testPipelineWithConvergenceCoaching() {
@@ -98,8 +113,10 @@ final class IntelligencePipelineTests: XCTestCase {
             gaSnapshot: makeGASnapshot()
         )
 
-        XCTAssertNotNil(result.convergenceCoaching)
-        // Stagnation > 25% with isImproving=false → stopEarly
+        XCTAssertNotNil(result.convergenceCoaching,
+                        "Should produce convergence coaching when GAProgressSnapshot is provided")
+        // Snapshot: gen 150/200, 60 gens since improvement, isImproving=false
+        // 60/200 = 30% stagnation → stopEarly
         XCTAssertEqual(result.convergenceCoaching?.advice, .stopEarly)
     }
 
@@ -110,7 +127,9 @@ final class IntelligencePipelineTests: XCTestCase {
             cleftFeatures: makeCleftFeatures()
         )
 
-        XCTAssertNotNil(result.cleftAssessment)
+        XCTAssertNotNil(result.cleftAssessment,
+                        "Should produce cleft assessment when CleftFeatures is provided")
+        // Volume 500, depth 7.0, hydrophobic 0.55, anchors 6, low solvent exposure
         XCTAssertEqual(result.cleftAssessment?.druggability, .high)
     }
 
@@ -128,8 +147,9 @@ final class IntelligencePipelineTests: XCTestCase {
         )
         let result = pipeline.analyze(dockingResult: empty)
 
-        XCTAssertNil(result.modeNarrative)
-        XCTAssertTrue(result.errors.contains { $0.contains("BindingModeNarrator") })
+        XCTAssertNil(result.modeNarrative, "Mode narrative should be nil for empty binding modes")
+        XCTAssertTrue(result.errors.contains { $0.contains("BindingModeNarrator") },
+                      "Errors should mention BindingModeNarrator when no modes available")
     }
 
     func testPipelineIsolatesFailures() {
@@ -144,14 +164,15 @@ final class IntelligencePipelineTests: XCTestCase {
             temperature: 298.15,
             populationSize: 0
         )
-        // Even with empty modes, convergence coaching should still work
+        // Even with empty modes, convergence coaching should still work if snapshot is provided
         let result = pipeline.analyze(
             dockingResult: empty,
             gaSnapshot: makeGASnapshot()
         )
 
         XCTAssertNil(result.modeNarrative, "Mode narrative should fail for empty modes")
-        XCTAssertNotNil(result.convergenceCoaching, "Convergence coaching should succeed independently")
+        XCTAssertNotNil(result.convergenceCoaching,
+                        "Convergence coaching should succeed independently of mode narrative failure")
     }
 
     // MARK: - Codable Round-Trip
@@ -164,17 +185,36 @@ final class IntelligencePipelineTests: XCTestCase {
             cleftFeatures: makeCleftFeatures()
         )
 
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(IntelligenceResult.self, from: data)
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(original)
 
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(IntelligenceResult.self, from: data)
+
+        // Verify mode narrative round-trips
         XCTAssertEqual(decoded.modeNarrative?.modeDescriptions.count,
                        original.modeNarrative?.modeDescriptions.count)
+        XCTAssertEqual(decoded.modeNarrative?.confidence,
+                       original.modeNarrative?.confidence)
+
+        // Verify convergence coaching round-trips
         XCTAssertEqual(decoded.convergenceCoaching?.advice,
                        original.convergenceCoaching?.advice)
+        XCTAssertEqual(decoded.convergenceCoaching?.estimatedGenerationsRemaining,
+                       original.convergenceCoaching?.estimatedGenerationsRemaining)
+
+        // Verify cleft assessment round-trips
         XCTAssertEqual(decoded.cleftAssessment?.druggability,
                        original.cleftAssessment?.druggability)
+        XCTAssertEqual(decoded.cleftAssessment?.warnings.count,
+                       original.cleftAssessment?.warnings.count)
+
+        // Verify pose quality reports round-trip
         XCTAssertEqual(decoded.poseQualityReports.count,
                        original.poseQualityReports.count)
+
+        // Verify errors round-trip
         XCTAssertEqual(decoded.errors.count, original.errors.count)
+        XCTAssertEqual(decoded.errors, original.errors)
     }
 }
