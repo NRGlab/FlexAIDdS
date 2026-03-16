@@ -154,13 +154,9 @@ def _compute_spatial_entropy_numpy(
     entropy_norm = entropy / max_s if max_s > 0 else entropy
 
     valid_pts = grid_pts[valid]
-    for i in range(len(valid_pts)):
-        results.append((
-            float(valid_pts[i, 0]),
-            float(valid_pts[i, 1]),
-            float(valid_pts[i, 2]),
-            float(entropy_norm[i]),
-        ))
+    # Bulk conversion: combine coords and entropy into one array, then .tolist()
+    combined = np.column_stack([valid_pts, entropy_norm.reshape(-1, 1)])
+    results = [tuple(row) for row in combined.tolist()]
 
     return results
 

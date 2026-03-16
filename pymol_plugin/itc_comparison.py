@@ -38,7 +38,7 @@ def _parse_itc_csv(csv_path: str) -> Dict[str, float]:
     return rows[0] if rows else {}
 
 
-def _parse_itc_csv_multi(csv_path: str) -> List[Dict[str, float]]:
+def _parse_itc_csv_multi(csv_path: str) -> List[Dict[str, Any]]:
     """Parse a multi-row ITC experimental data CSV file.
 
     Expected format (header + one or more data rows):
