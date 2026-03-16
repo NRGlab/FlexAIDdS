@@ -8,6 +8,8 @@
 #include <numeric>
 #include <algorithm>
 
+using namespace fast_optics;
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 static std::vector<Point> make_1d_points(const std::vector<double>& values) {
@@ -29,14 +31,14 @@ static std::vector<Point> make_2d_cluster(double cx, double cy, int n, double sp
 
 // ── FULL_OPTICS mode tests ─────────────────────────────────────────────────
 
-TEST(FastOPTICS, FullOpticsReturnsAllIndices) {
+TEST(FastOPTICSTest, FullOpticsReturnsAllIndices) {
     auto pts = make_1d_points({1.0, 2.0, 3.0, 4.0, 5.0});
     FastOPTICS foptics(pts, 2);
     auto indices = foptics.extractSuperCluster(ClusterMode::FULL_OPTICS);
     ASSERT_EQ(indices.size(), pts.size());
 }
 
-TEST(FastOPTICS, OrderingMatchesPointCount) {
+TEST(FastOPTICSTest, OrderingMatchesPointCount) {
     auto pts = make_1d_points({-10.0, -9.5, -8.0, -11.0, -7.5});
     FastOPTICS foptics(pts, 2);
     const auto& ordering = foptics.getOrdering();
@@ -45,7 +47,7 @@ TEST(FastOPTICS, OrderingMatchesPointCount) {
 
 // ── SUPER_CLUSTER_ONLY mode tests ──────────────────────────────────────────
 
-TEST(FastOPTICS, SuperClusterSelectsSubset) {
+TEST(FastOPTICSTest, SuperClusterSelectsSubset) {
     // Two well-separated clusters in 1D: dense group near 0, sparse outliers near 100
     std::vector<double> values;
     // Dense cluster: 20 points near 0
@@ -62,7 +64,7 @@ TEST(FastOPTICS, SuperClusterSelectsSubset) {
     ASSERT_LE(sc.size(), pts.size());
 }
 
-TEST(FastOPTICS, SuperCluster2DClusters) {
+TEST(FastOPTICSTest, SuperCluster2DClusters) {
     // Two 2D clusters: tight cluster A at (0,0), loose cluster B at (50,50)
     auto clusterA = make_2d_cluster(0.0, 0.0, 15, 0.5);
     auto clusterB = make_2d_cluster(50.0, 50.0, 5, 5.0);
@@ -81,7 +83,7 @@ TEST(FastOPTICS, SuperCluster2DClusters) {
 
 // ── Edge cases ─────────────────────────────────────────────────────────────
 
-TEST(FastOPTICS, SinglePoint) {
+TEST(FastOPTICSTest, SinglePoint) {
     auto pts = make_1d_points({42.0});
     FastOPTICS foptics(pts, 1);
     auto sc_full = foptics.extractSuperCluster(ClusterMode::FULL_OPTICS);
@@ -91,14 +93,14 @@ TEST(FastOPTICS, SinglePoint) {
     ASSERT_EQ(sc_super.size(), 1u);
 }
 
-TEST(FastOPTICS, TwoIdenticalPoints) {
+TEST(FastOPTICSTest, TwoIdenticalPoints) {
     auto pts = make_1d_points({5.0, 5.0});
     FastOPTICS foptics(pts, 1);
     auto sc = foptics.extractSuperCluster(ClusterMode::SUPER_CLUSTER_ONLY);
     ASSERT_EQ(sc.size(), 2u);
 }
 
-TEST(FastOPTICS, UniformDistribution) {
+TEST(FastOPTICSTest, UniformDistribution) {
     // All points equidistant — super-cluster should still work
     std::vector<double> values;
     for (int i = 0; i < 10; ++i) values.push_back(static_cast<double>(i));
@@ -108,7 +110,7 @@ TEST(FastOPTICS, UniformDistribution) {
     ASSERT_GT(sc.size(), 0u);
 }
 
-TEST(FastOPTICS, IndicesAreValid) {
+TEST(FastOPTICSTest, IndicesAreValid) {
     auto pts = make_1d_points({1.0, 3.0, 5.0, 7.0, 9.0, 11.0});
     FastOPTICS foptics(pts, 2);
     auto sc = foptics.extractSuperCluster(ClusterMode::SUPER_CLUSTER_ONLY);
@@ -119,13 +121,13 @@ TEST(FastOPTICS, IndicesAreValid) {
 
 // ── Distance helper ────────────────────────────────────────────────────────
 
-TEST(FastOPTICS, DistanceFunction) {
+TEST(FastOPTICSTest, DistanceFunction) {
     Point a{{ 0.0, 0.0 }};
     Point b{{ 3.0, 4.0 }};
     ASSERT_NEAR(distance(a, b), 5.0, 1e-10);
 }
 
-TEST(FastOPTICS, DistanceIdenticalPoints) {
+TEST(FastOPTICSTest, DistanceIdenticalPoints) {
     Point a{{ 1.0, 2.0, 3.0 }};
     ASSERT_NEAR(distance(a, a), 0.0, 1e-15);
 }

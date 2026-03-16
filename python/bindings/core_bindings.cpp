@@ -342,35 +342,34 @@ PYBIND11_MODULE(_core, m) {
     // FastOPTICS: lightweight super-cluster extraction
     // ═══════════════════════════════════════════════════════════════════════
 
-    py::enum_<ClusterMode>(m, "ClusterMode",
+    py::enum_<fast_optics::ClusterMode>(m, "ClusterMode",
         "Clustering mode for FastOPTICS extraction")
-        .value("FULL_OPTICS", ClusterMode::FULL_OPTICS, "Full OPTICS hierarchy walk")
-        .value("SUPER_CLUSTER_ONLY", ClusterMode::SUPER_CLUSTER_ONLY,
+        .value("FULL_OPTICS", fast_optics::ClusterMode::FULL_OPTICS, "Full OPTICS hierarchy walk")
+        .value("SUPER_CLUSTER_ONLY", fast_optics::ClusterMode::SUPER_CLUSTER_ONLY,
                "Fast super-cluster extraction (~40%% faster)")
         .export_values();
 
-    py::class_<Point>(m, "Point", "N-dimensional point for OPTICS clustering")
+    py::class_<fast_optics::Point>(m, "Point", "N-dimensional point for OPTICS clustering")
         .def(py::init<>())
         .def(py::init([](std::vector<double> c) {
-            Point p; p.coords = std::move(c); return p;
+            fast_optics::Point p; p.coords = std::move(c); return p;
         }), py::arg("coords"))
-        .def_readwrite("coords", &Point::coords);
+        .def_readwrite("coords", &fast_optics::Point::coords);
 
-    py::class_<Reachability>(m, "Reachability",
+    py::class_<fast_optics::Reachability>(m, "Reachability",
         "OPTICS ordering entry with point index and reachability distance")
-        .def_readonly("index", &Reachability::index)
-        .def_readonly("reach", &Reachability::reach);
+        .def_readonly("index", &fast_optics::Reachability::index)
+        .def_readonly("reach", &fast_optics::Reachability::reach);
 
-    // Use a distinct Python name to avoid collision with legacy FOPTICS
-    py::class_<::FastOPTICS>(m, "FastOPTICSLight",
+    py::class_<fast_optics::FastOPTICS>(m, "FastOPTICSLight",
         "Lightweight FastOPTICS clustering with super-cluster extraction")
-        .def(py::init<const std::vector<Point>&, int, double>(),
+        .def(py::init<const std::vector<fast_optics::Point>&, int, double>(),
             py::arg("points"), py::arg("min_pts") = 4, py::arg("eps") = 0.0,
             "Build OPTICS ordering from points")
-        .def("get_ordering", &::FastOPTICS::getOrdering,
+        .def("get_ordering", &fast_optics::FastOPTICS::getOrdering,
             py::return_value_policy::reference_internal,
             "Return the OPTICS reachability ordering")
-        .def("extract_super_cluster", &::FastOPTICS::extractSuperCluster,
-            py::arg("mode") = ClusterMode::FULL_OPTICS,
+        .def("extract_super_cluster", &fast_optics::FastOPTICS::extractSuperCluster,
+            py::arg("mode") = fast_optics::ClusterMode::FULL_OPTICS,
             "Extract cluster indices (SUPER_CLUSTER_ONLY for fast mode)");
 }

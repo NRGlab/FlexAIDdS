@@ -3,6 +3,8 @@
 #include <numeric>
 #include <functional>
 
+namespace fast_optics {
+
 FastOPTICS::FastOPTICS(const std::vector<Point>& points, int minPts, double eps)
     : minPts_(minPts), eps_(eps), points_(points)
 {
@@ -127,3 +129,5 @@ std::vector<size_t> FastOPTICS::extractClustersFromOrdering() const {
     }
     return indices;
 }
+
+} // namespace fast_optics

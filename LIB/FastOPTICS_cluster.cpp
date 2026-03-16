@@ -10,12 +10,12 @@ void FastOPTICS_cluster(FA_Global* FA, GB_Global* GB, VC_Global* VC, chromosome*
 
     // Optional super-cluster pre-filter using lightweight FastOPTICS
     if (FA->use_super_cluster && nChrom > 4) {
-        std::vector<Point> energy_pts(nChrom);
+        std::vector<fast_optics::Point> energy_pts(nChrom);
         for (int i = 0; i < nChrom; ++i)
             energy_pts[i].coords = { chrom[i].evalue };
 
-        ::FastOPTICS sc_optics(energy_pts, std::max(4, nChrom / 20));
-        auto sc_indices = sc_optics.extractSuperCluster(ClusterMode::SUPER_CLUSTER_ONLY);
+        fast_optics::FastOPTICS sc_optics(energy_pts, std::max(4, nChrom / 20));
+        auto sc_indices = sc_optics.extractSuperCluster(fast_optics::ClusterMode::SUPER_CLUSTER_ONLY);
         printf("--- SuperCluster pre-filter (FastOPTICS_cluster): %zu / %d poses in super-cluster ---\n",
                sc_indices.size(), nChrom);
     }
