@@ -5,6 +5,7 @@
 #include "fileio.h"
 #include "statmech.h"  // statistical mechanics engine
 #include "encom.h"     // ENCoM vibrational entropy (Phase 3)
+#include "ShannonThermoStack/ShannonThermoStack.h"  // Shannon configurational entropy
 
 //#define UNDEFINED_DIST FLT_MAX // Defined in FOPTICS as > than +INF
 #define UNDEFINED_DIST -0.1f // Defined in FOPTICS as > than +INF
@@ -81,7 +82,8 @@ class BindingMode // aggregation of poses (Cluster)
 				int nbins = 20
 			) const;  // 1D FE profile along arbitrary coordinate
 			
-			std::vector<Pose>::const_iterator elect_Representative(bool useOPTICSordering) const;
+			const Pose&	get_pose(int index) const;
+		std::vector<Pose>::const_iterator elect_Representative(bool useOPTICSordering) const;
 			inline bool const 			operator<(const BindingMode&);
 
 			// ═══ PUBLIC ACCESSORS (for bindings) ═══
@@ -134,6 +136,11 @@ class BindingPopulation
 		 	/// Get global ensemble StatMechEngine aggregating all binding modes
 		 	statmech::StatMechEngine get_global_ensemble() const;
 
+		 	// ═══ POPULATION-LEVEL SHANNON ENTROPY ═══
+		 	/// Shannon configurational entropy across all binding modes: S = -kB * sum(p_i * ln(p_i))
+		 	double	get_shannon_entropy() const;
+		 	/// ΔG matrix between all pairs of binding modes (upper triangle, row-major)
+		 	std::vector<std::vector<double>> get_deltaG_matrix() const;
 		 	// ═══ PUBLIC ACCESSORS (for bindings) ═══
 		 	const BindingMode& get_binding_mode(int index) const { return BindingModes.at(index); }
 		 	const std::vector<BindingMode>& get_binding_modes() const { return BindingModes; }
@@ -155,7 +162,9 @@ class BindingPopulation
 	private:
 
 		std::vector< BindingMode > 	BindingModes;	// BindingMode container
-		
+		mutable double				shannonS_population_;	// cached Shannon entropy
+		mutable bool				shannon_cache_valid_;	// cache validity flag
+
 		void 	 					Entropize(); 	// Sort BindinModes according to their observation frequency
 		
 		struct EnergyComparator

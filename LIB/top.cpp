@@ -294,6 +294,17 @@ int main(int argc, char **argv){
 			FA->intramolecular ? "ON" : "OFF",
 			FA->complf);
 
+		// For now, the new mode sets the config values but still requires
+		// the legacy input files to be generated or provided.
+		// TODO: Direct PDB/MOL2 loading without .inp files.
+		//   Requires: auto-generate grid from cleft detection, load default
+		//   energy matrix + atom type definitions, build rotamer library,
+		//   and call read_pdb/read_mol2_ligand directly. See read_input()
+		//   for the full list of initialisation steps that must be replicated.
+		fprintf(stderr, "NOTE: Direct receptor/ligand mode is prepared (config applied).\n");
+		fprintf(stderr, "Input pipeline integration in progress. Use --legacy for full runs.\n");
+		fprintf(stderr, "Config loaded: %s\n", config_path.empty() ? "(defaults)" : config_path.c_str());
+
 		// Set output prefix for end_strfile
 		strncpy(end_strfile, output_prefix.c_str(), MAX_PATH__ - 1);
 		end_strfile[MAX_PATH__ - 1] = '\0';
