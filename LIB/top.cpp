@@ -122,6 +122,7 @@ int main(int argc, char **argv){
 	FA->dee_clash = 0.5;
 	FA->intrafraction = 1.0;
 	FA->cluster_rmsd = 2.0f;
+	FA->use_super_cluster = false;
 	FA->rotamer_permeability = 0.8;
 	FA->temperature = 0;
 	FA->beta = 0.0;
@@ -391,7 +392,8 @@ int main(int argc, char **argv){
 				strcat(tmpprotname, random_str);
 			}
 
-			modify_pdb(receptor_file, tmpprotname, FA->exclude_het, FA->remove_water, FA->is_protein);
+			modify_pdb(receptor_file, tmpprotname, FA->exclude_het, FA->remove_water, FA->is_protein,
+			           FA->keep_ions, FA->keep_structural_waters, FA->structural_water_bfactor_max);
 			read_pdb(FA, &atoms, &residue, tmpprotname);
 			remove(tmpprotname);
 		}

@@ -2,6 +2,7 @@
 
 from .models import BindingModeResult, DockingResult, PoseResult
 from .results import load_results
+from .io import is_ion, _ION_RESNAMES
 from .docking import Docking, BindingMode, BindingPopulation, Pose
 from .encom import ENCoMEngine, NormalMode, VibrationalEntropy
 from .tencm import (
@@ -40,6 +41,7 @@ except ImportError:
     kB_SI = 1.380649e-23    # J K⁻¹
     HAS_CORE_BINDINGS = False
 
+from .supercluster import SuperCluster
 from .tencom_results import FlexModeResult, FlexPopulationResult, parse_tencom_pdb, parse_tencom_json
 from .energy_matrix import (
     EnergyMatrix,
@@ -158,6 +160,8 @@ __all__ = [
     "compute_shannon_entropy",
     "compute_torsional_vibrational_entropy",
     "run_shannon_thermo_stack",
+    # Super-cluster extraction
+    "SuperCluster",
     # Physical constants
     "kB_kcal",
     "kB_SI",

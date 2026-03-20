@@ -82,12 +82,10 @@ class BindingMode // aggregation of poses (Cluster)
 				int nbins = 20
 			) const;  // 1D FE profile along arbitrary coordinate
 			
-			const Pose&	get_pose(int index) const;
 		std::vector<Pose>::const_iterator elect_Representative(bool useOPTICSordering) const;
 			inline bool const 			operator<(const BindingMode&);
 
 			// ═══ PUBLIC ACCESSORS (for bindings) ═══
-			const Pose&					get_pose(int index) const { return Poses.at(index); }
 			const std::vector<Pose>&	get_poses() const { return Poses; }
 
  	protected:
@@ -137,6 +135,8 @@ class BindingPopulation
 		 	double	compute_delta_G(const BindingMode& mode1, const BindingMode& mode2) const;
 		 	/// Get global ensemble StatMechEngine aggregating all binding modes
 		 	statmech::StatMechEngine get_global_ensemble() const;
+		 	/// Get super-cluster filtered ensemble (dominant energy basin only)
+		 	statmech::StatMechEngine get_super_cluster_ensemble() const;
 
 		 	// ═══ POPULATION-LEVEL SHANNON ENTROPY ═══
 		 	/// Shannon configurational entropy across all binding modes: S = -kB * sum(p_i * ln(p_i))
@@ -144,7 +144,6 @@ class BindingPopulation
 		 	/// ΔG matrix between all pairs of binding modes (upper triangle, row-major)
 		 	std::vector<std::vector<double>> get_deltaG_matrix() const;
 		 	// ═══ PUBLIC ACCESSORS (for bindings) ═══
-		 	const BindingMode& get_binding_mode(int index) const { return BindingModes.at(index); }
 		 	const std::vector<BindingMode>& get_binding_modes() const { return BindingModes; }
 
 	protected:

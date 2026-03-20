@@ -339,6 +339,7 @@ struct FA_Global_struct{
 	float maxdst;                        // max distance from a protein atom to PCG 
 	float cluster_rmsd;                  // rmsd between poses when clustering
 	char  clustering_algorithm[3];
+	bool  use_super_cluster;             // use SUPER_CLUSTER_ONLY mode for faster clustering
 	uint temperature;					 // temperature parameter 
 	double beta;						 // Metropolis ß parament == 1/T *may be worth trying 1/kT*
 	float permeability;                  // allow permeability or not between atoms
@@ -362,6 +363,9 @@ struct FA_Global_struct{
 	int   res_cnt;                       // total number of residues
 	int   exclude_het;                   // exclude HET groups when calculating CF
 	int   remove_water;                  // exclude water molecules (HET=HOH)
+	int   keep_ions;                     // retain metal ions even when exclude_het=1
+	int   keep_structural_waters;        // retain low-B-factor crystallographic waters
+	float structural_water_bfactor_max;  // B-factor cutoff for structural waters (Å²)
 	int   output_range;                  // outputs Sphere or Grid file(s)
 
 	int     bloops;                      // exclude interactions with atoms n bloops away (exclude dis-ang preferably)
@@ -595,7 +599,9 @@ double get_cf_evalue(cfstr* cf);
 
 double GetValueFromGaussian(double x,double max,double zero);
 
-void modify_pdb(char* infile, char* outfile, int exclude_het, int remove_water, int is_protein); // reorder protein atoms in PDB file
+void modify_pdb(char* infile, char* outfile, int exclude_het, int remove_water, int is_protein,
+                int keep_ions=1, int keep_structural_waters=1,
+                float structural_water_bfactor_max=20.0f); // reorder protein atoms in PDB file
 int rna_structure(char* infile);
 int get_NextLine(char lines[][100], int nlines);
 int is_rna_structure(char* infile);
