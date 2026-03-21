@@ -1,4 +1,5 @@
 #include "BindingMode.h"
+#include "fast_optics.hpp"
 
 #include <algorithm>
 #include <cfloat>
@@ -122,57 +123,93 @@ statmech::StatMechEngine BindingPopulation::get_global_ensemble() const
 }
 
 
-/// === Population-level Shannon entropy ===
-double BindingPopulation::get_shannon_entropy() const
+statmech::StatMechEngine BindingPopulation::get_super_cluster_ensemble() const
 {
-	if (shannon_cache_valid_)
-	{
-		return shannonS_population_;
-	}
-
 	// Collect all pose energies across all binding modes
 	std::vector<double> all_energies;
 	for (const auto& mode : this->BindingModes)
-	{
 		for (const auto& pose : mode.Poses)
-		{
 			all_energies.push_back(pose.CF);
-		}
-	}
 
-	if (all_energies.empty())
+	if (all_energies.size() <= 4)
+		return get_global_ensemble();  // too few poses for meaningful filtering
+
+	// Build 1D energy points for lightweight FastOPTICS
+	std::vector<fast_optics::Point> energy_pts(all_energies.size());
+	for (size_t i = 0; i < all_energies.size(); ++i)
+		energy_pts[i].coords = { all_energies[i] };
+
+	fast_optics::FastOPTICS sc_optics(energy_pts,
+		std::max(4, static_cast<int>(all_energies.size()) / 20));
+	auto sc_indices = sc_optics.extractSuperCluster(
+		fast_optics::ClusterMode::SUPER_CLUSTER_ONLY);
+
+	if (sc_indices.empty())
+		return get_global_ensemble();  // fallback if extraction yields nothing
+
+	statmech::StatMechEngine sc_engine(static_cast<double>(this->Temperature));
+	for (size_t idx : sc_indices)
+		sc_engine.add_sample(all_energies[idx], 1.0);
+
+	return sc_engine;
+}
+
+
+double BindingPopulation::get_shannon_entropy() const
+{
+	if (shannon_cache_valid_)
+		return shannonS_population_;
+
+	if (BindingModes.empty())
 	{
 		shannonS_population_ = 0.0;
 		shannon_cache_valid_ = true;
 		return 0.0;
 	}
 
-	// Compute Shannon entropy via ShannonThermoStack (energy histogram binning)
-	double shannon_bits = shannon_thermo::compute_shannon_entropy(all_energies);
+	// Collect free energies per mode and compute Boltzmann weights
+	const double beta = 1.0 / (statmech::kB_kcal * static_cast<double>(Temperature));
+	std::vector<double> log_weights;
+	log_weights.reserve(BindingModes.size());
+	for (const auto& mode : BindingModes)
+		log_weights.push_back(-beta * mode.get_free_energy());
 
-	// Convert from dimensionless bits to thermodynamic units: S = kB * H
-	shannonS_population_ = statmech::kB_kcal * shannon_bits;
+	// Log-sum-exp for numerical stability
+	double log_Z = log_weights[0];
+	for (std::size_t i = 1; i < log_weights.size(); ++i)
+		log_Z = std::max(log_Z, log_weights[i]) +
+		        std::log1p(std::exp(std::min(log_weights[i], log_weights[0]) -
+		                            std::max(log_weights[i], log_weights[0])));
+
+	// Recompute properly with log-sum-exp
+	double lse = *std::max_element(log_weights.begin(), log_weights.end());
+	double sum_exp = 0.0;
+	for (double lw : log_weights)
+		sum_exp += std::exp(lw - lse);
+	double log_sum = lse + std::log(sum_exp);
+
+	double S = 0.0;
+	for (double lw : log_weights)
+	{
+		double p = std::exp(lw - log_sum);
+		if (p > 0.0)
+			S -= p * std::log(p);
+	}
+	// Convert to kcal/mol/K units (multiply by kB)
+	shannonS_population_ = statmech::kB_kcal * S;
 	shannon_cache_valid_ = true;
 	return shannonS_population_;
 }
 
 
-/// === ΔG matrix between all pairs of binding modes ===
 std::vector<std::vector<double>> BindingPopulation::get_deltaG_matrix() const
 {
-	int n = static_cast<int>(this->BindingModes.size());
+	const std::size_t n = BindingModes.size();
 	std::vector<std::vector<double>> matrix(n, std::vector<double>(n, 0.0));
-
-	for (int i = 0; i < n; ++i)
-	{
-		for (int j = i + 1; j < n; ++j)
-		{
-			double dg = compute_delta_G(this->BindingModes[i], this->BindingModes[j]);
-			matrix[i][j] = dg;
-			matrix[j][i] = -dg;
-		}
-	}
-
+	for (std::size_t i = 0; i < n; ++i)
+		for (std::size_t j = 0; j < n; ++j)
+			if (i != j)
+				matrix[i][j] = compute_delta_G(BindingModes[i], BindingModes[j]);
 	return matrix;
 }
 
@@ -384,6 +421,10 @@ void BindingMode::output_BindingMode(int num_result, char* end_strfile, char* tm
 	sprintf(tmpremark, "REMARK Binding Mode:%d Best CF in Binding Mode:%8.5f OPTICS Center (CF):%8.5f Binding Mode Total CF:%8.5f Binding Mode Frequency:%d\n",
 		num_result, Rep_lowCF->CF, Rep_lowOPTICS->CF, this->compute_energy(), this->get_BindingMode_size());
 	strcat(remark, tmpremark);
+	if (this->Population->FA->use_super_cluster) {
+		sprintf(tmpremark, "REMARK SuperCluster pre-filter active\n");
+		strcat(remark, tmpremark);
+	}
 	{
 		double vib_corr = this->compute_vibrational_correction();
 		if (std::abs(vib_corr) > 1e-12) {
