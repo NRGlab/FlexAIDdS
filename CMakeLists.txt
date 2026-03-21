@@ -1177,13 +1177,48 @@ if(BUILD_TESTING)
     flexaids_configure_msvc_test(test_ga_validation)
     add_test(NAME GAValidationTests COMMAND test_ga_validation)
 
-    # test_fast_optics — lightweight FastOPTICS super-cluster extraction tests
-    add_executable(test_fast_optics
-        tests/test_fast_optics.cpp
-        LIB/fast_optics.cpp
-    )
-    target_include_directories(test_fast_optics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
-    target_link_libraries(test_fast_optics PRIVATE GTest::gtest GTest::gtest_main)
+    # test_soft_contact_matrix — 256×256 energy matrix I/O, projection, lookup
+    if(FLEXAIDS_USE_256_MATRIX)
+        add_executable(test_soft_contact_matrix
+            tests/test_soft_contact_matrix.cpp
+            LIB/ShannonThermoStack/ShannonThermoStack.cpp
+            LIB/statmech.cpp
+            LIB/encom.cpp
+            LIB/tencm.cpp
+            LIB/hardware_dispatch.cpp
+            LIB/hardware_detect.cpp
+        )
+        target_include_directories(test_soft_contact_matrix PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/LIB
+            ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
+        )
+        target_link_libraries(test_soft_contact_matrix PRIVATE GTest::gtest GTest::gtest_main)
+        target_compile_definitions(test_soft_contact_matrix PRIVATE FLEXAIDS_USE_256_MATRIX)
+        if(MSVC)
+            target_compile_options(test_soft_contact_matrix PRIVATE /O2)
+        else()
+            target_compile_options(test_soft_contact_matrix PRIVATE -O2)
+        endif()
+        if(FLEXAIDS_USE_OPENMP AND OpenMP_CXX_FOUND)
+            target_link_libraries(test_soft_contact_matrix PRIVATE OpenMP::OpenMP_CXX)
+        endif()
+        if(FLEXAIDS_USE_EIGEN AND Eigen3_FOUND)
+            target_link_libraries(test_soft_contact_matrix PRIVATE Eigen3::Eigen)
+            target_compile_definitions(test_soft_contact_matrix PRIVATE FLEXAIDS_HAS_EIGEN)
+        endif()
+        add_test(NAME SoftContactMatrixTests COMMAND test_soft_contact_matrix)
+    endif()
+
+    # test_ion_handling — assign_radii / assign_types HETATM + ion coverage
+    #                     + tENCoM ion contact surface (TmContSct) tests
+    add_executable(test_ion_handling
+        tests/test_ion_handling.cpp
+        LIB/assign_radii.cpp
+        LIB/assign_types.cpp
+        LIB/fileio.cpp
+        LIB/tencm.cpp)
+    target_include_directories(test_ion_handling PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
+    target_link_libraries(test_ion_handling PRIVATE GTest::gtest GTest::gtest_main)
     if(MSVC)
         target_compile_options(test_fast_optics PRIVATE /O2)
     else()
