@@ -27,6 +27,7 @@
 #include "NATURaLDualAssembly.h"
 #include "RibosomeElongation.h"
 #include "TransloconInsertion.h"
+#include "../gaboom.h"   // vcfunction / cfstr / get_apparent_cf_evalue
 
 #include <cstring>
 #include <cmath>
@@ -160,9 +161,22 @@ static ribosome::RibosomeElongation build_elongation_model(
             seq  += nt;
             codons.emplace_back(1, nt);  // single-character codon
         } else {
-            // Polypeptide mode: use 1-letter AA code from residue name
-            // (fallback to 'A' for unknown residues)
-            seq  += residues[i].name[0];
+            // Polypeptide mode: convert 3-letter residue name to 1-letter AA code
+            static const std::pair<const char*, char> aa_table[] = {
+                {"ALA",'A'}, {"ARG",'R'}, {"ASN",'N'}, {"ASP",'D'},
+                {"CYS",'C'}, {"GLN",'Q'}, {"GLU",'E'}, {"GLY",'G'},
+                {"HIS",'H'}, {"ILE",'I'}, {"LEU",'L'}, {"LYS",'K'},
+                {"MET",'M'}, {"PHE",'F'}, {"PRO",'P'}, {"SER",'S'},
+                {"THR",'T'}, {"TRP",'W'}, {"TYR",'Y'}, {"VAL",'V'},
+                {"SEC",'U'}, {"PYL",'O'}, {"HSD",'H'}, {"HSE",'H'},
+                {"HSP",'H'}, {"HIE",'H'}, {"HID",'H'}, {"HIP",'H'},
+                {"CYX",'C'}, {"ASH",'D'}, {"GLH",'E'},
+            };
+            char aa_code = 'X';
+            for (const auto& [code3, code1] : aa_table) {
+                if (strncmp(rname, code3, 3) == 0) { aa_code = code1; break; }
+            }
+            seq  += aa_code;
             codons.emplace_back(); // mean rate used when codon is empty
         }
     }
@@ -180,8 +194,20 @@ DualAssemblyEngine::DualAssemblyEngine(const NATURaLConfig& cfg,
                                          atom* atoms, resid* residues,
                                          int n_residues)
     : config_(cfg), FA_(FA), VC_(VC),
-      atoms_(atoms), residues_(residues), n_residues_(n_residues)
+      atoms_(atoms), residues_(residues), n_residues_(n_residues),
+      is_rna_receptor_(is_nucleic_acid_receptor(residues, n_residues))
 {}
+
+// Hill equation: k_eff = k_max × [Mg]ⁿ / (K_d ⁿ + [Mg]ⁿ)
+// Returns the fractional saturation of Mg²⁺ binding sites (0–1).
+double DualAssemblyEngine::mg_hill_factor() const noexcept {
+    double mg  = config_.mg_concentration_mM;
+    double kd  = ribosome::KD_MG_RNA_MM;
+    double n   = ribosome::N_HILL_MG;
+    double mgn = std::pow(mg, n);
+    double kdn = std::pow(kd, n);
+    return mgn / (kdn + mgn);
+}
 
 std::vector<DualAssemblyEngine::GrowthStep> DualAssemblyEngine::run() {
     std::vector<GrowthStep> trajectory;
@@ -234,10 +260,24 @@ std::vector<DualAssemblyEngine::GrowthStep> DualAssemblyEngine::run() {
             config_.temperature_K, 0.5,
             static_cast<int>(ribosome::TUNNEL_LENGTH_AA));
         // Build 1-letter sequence for TransloconInsertion window scanning
+        // Uses same 3-letter→1-letter conversion as elongation model
+        static const std::pair<const char*, char> aa_table[] = {
+            {"ALA",'A'}, {"ARG",'R'}, {"ASN",'N'}, {"ASP",'D'},
+            {"CYS",'C'}, {"GLN",'Q'}, {"GLU",'E'}, {"GLY",'G'},
+            {"HIS",'H'}, {"ILE",'I'}, {"LEU",'L'}, {"LYS",'K'},
+            {"MET",'M'}, {"PHE",'F'}, {"PRO",'P'}, {"SER",'S'},
+            {"THR",'T'}, {"TRP",'W'}, {"TYR",'Y'}, {"VAL",'V'},
+        };
         aa_seq_for_tm.reserve(n_residues_);
         for (int r = 0; r < n_residues_; ++r) {
             const char* rname = residues_[r].name;
-            aa_seq_for_tm += (rname && rname[0]) ? rname[0] : 'X';
+            char aa_code = 'X';
+            if (rname) {
+                for (const auto& [code3, code1] : aa_table) {
+                    if (strncmp(rname, code3, 3) == 0) { aa_code = code1; break; }
+                }
+            }
+            aa_seq_for_tm += aa_code;
         }
     }
 
@@ -259,9 +299,27 @@ std::vector<DualAssemblyEngine::GrowthStep> DualAssemblyEngine::run() {
         bool   in_tunnel   = (step < static_cast<int>(tunnel_len));
         bool   is_pause    = (!in_tunnel) && (k_n < pause_threshold * hmean_rate);
 
-        // Co-translational folding probability: P_fold = k_fold/(k_fold + k_el)
-        double k_fold_here = ribosome::K_FOLD_DEFAULT;
-        if (is_pause) k_fold_here *= 3.0;   // Pechmann 2013 pause-site boost
+        // Co-translational folding probability: P_fold = k_fold / (k_fold + k_el)
+        //
+        // RNA receptors use differentiated rates:
+        //   • Secondary structure (stems/hairpins) folds in microseconds — k ~ 1e4 s⁻¹
+        //     → P_fold ≈ 1 during continuous elongation at 25 nt/s
+        //   • Tertiary / active-site conformation is Mg²⁺-dependent (Hill equation)
+        //     → k_eff = K_FOLD_RNA_TERTIARY × [Mg]ⁿ/(K_d ⁿ + [Mg]ⁿ), only at pause sites
+        // Refs: Woodside 2006 PNAS (hairpin); Penedo 2004 RNA; Martick & Scott 2006 Cell.
+        double k_fold_here;
+        if (is_rna_receptor_ && config_.ion_dependent_folding) {
+            if (is_pause) {
+                // Pause site: tertiary folding window, Mg²⁺-gated
+                k_fold_here = config_.k_fold_rna_tertiary * mg_hill_factor();
+            } else {
+                // Continuous elongation: secondary structure (fast)
+                k_fold_here = config_.k_fold_rna_secondary;
+            }
+        } else {
+            k_fold_here = ribosome::K_FOLD_DEFAULT;
+            if (is_pause) k_fold_here *= 3.0;  // Pechmann 2013 pause-site boost
+        }
         double p_cotrans = k_fold_here / (k_fold_here + k_n);
 
         // CF score for partial complex
@@ -332,87 +390,28 @@ std::vector<DualAssemblyEngine::GrowthStep> DualAssemblyEngine::run() {
 // sampling) — the same physics as cffunction() but restricted to the grown
 // subset of the receptor.
 double DualAssemblyEngine::compute_partial_cf(int n_grown_residues) const {
-    if (!FA_ || !atoms_ || !residues_) return 0.0;
-    if (!FA_->energy_matrix || FA_->ntypes <= 0) return 0.0;
+    if (!FA_ || !VC_ || !atoms_ || !residues_) return 0.0;
 
-    const int n_grown = std::min(n_grown_residues, n_residues_);
-    if (n_grown <= 0) return 0.0;
+    // Temporarily mark grown residues as scorable and the rest as non-scorable
+    // by adjusting FA_->num_optres to cover only the grown portion.
+    // vcfunction() scores the current Cartesian atom coordinates directly —
+    // no IC → CC rebuild needed since DualAssembly keeps atoms_ in Cartesian.
+    const int saved_num_optres = FA_->num_optres;
+    const int n_score = std::min(n_grown_residues, n_residues_);
 
-    const int n_types = FA_->ntypes;
+    // Limit scoring to the first n_score residues (those grown so far).
+    // optres[] is ordered by residue index; trim the active count.
+    FA_->num_optres = std::min(n_score, saved_num_optres);
 
-    // Identify the range of ligand atoms.  Ligand residues have type == 1.
-    int lig_first = -1, lig_last = -1;
-    for (int r = 1; r <= FA_->res_cnt; ++r) {
-        if (residues_[r].type == 1) {
-            int rot = residues_[r].rot;
-            if (lig_first < 0 || residues_[r].fatm[rot] < lig_first)
-                lig_first = residues_[r].fatm[rot];
-            if (residues_[r].latm[rot] > lig_last)
-                lig_last = residues_[r].latm[rot];
-        }
-    }
-    if (lig_first < 0 || lig_last < lig_first) return 0.0;
+    std::vector<std::pair<int,int>> intraclashes;
+    bool error = false;
+    double cf_val = vcfunction(FA_, VC_, atoms_, residues_, intraclashes, &error);
 
-    // Accumulate complementarity over grown receptor atoms × ligand atoms.
-    // Contact distance: (Ri + Rj + 2·Rw)  — same criterion as cffunction().
-    double com = 0.0;
-    double wall = 0.0;
-    constexpr float OVERLAP_FRAC = 0.9f;
+    // Restore original optres count
+    FA_->num_optres = saved_num_optres;
 
-    for (int r = 1; r <= n_grown && r <= FA_->res_cnt; ++r) {
-        if (residues_[r].type != 0) continue;  // skip non-protein residues
-        int rot = residues_[r].rot;
-        for (int i = residues_[r].fatm[rot]; i <= residues_[r].latm[rot]; ++i) {
-            int t_i = atoms_[i].type;
-            if (t_i <= 0 || t_i > n_types) continue;
-            float rad_i = atoms_[i].radius;
-
-            for (int j = lig_first; j <= lig_last; ++j) {
-                int t_j = atoms_[j].type;
-                if (t_j <= 0 || t_j > n_types) continue;
-                float rad_j = atoms_[j].radius;
-
-                float rij = rad_i + rad_j;
-                float cutoff = rij + 2.0f * Rw;
-
-                // Squared distance between the two atoms
-                float dx = atoms_[i].coor[0] - atoms_[j].coor[0];
-                float dy = atoms_[i].coor[1] - atoms_[j].coor[1];
-                float dz = atoms_[i].coor[2] - atoms_[j].coor[2];
-                float d2 = dx * dx + dy * dy + dz * dz;
-
-                if (d2 > cutoff * cutoff) continue;
-
-                // Approximate contact area: cone-cap model.
-                // A_contact ≈ 2π·(Ri+Rw)·(Ri+Rw + Rj+Rw − d) capped at SAS_i.
-                float d = std::sqrt(d2);
-                float rad_oi = rad_i + Rw;
-                float overlap_depth = rad_oi + rad_j + Rw - d;
-                if (overlap_depth <= 0.0f) continue;
-                float area = 2.0f * static_cast<float>(PI) * rad_oi * overlap_depth;
-                float sas_i = 4.0f * static_cast<float>(PI) * rad_oi * rad_oi;
-                if (area > sas_i) area = sas_i;
-                float norm_area = area / sas_i;
-
-                // Energy lookup from the matrix (same as vcfunction)
-                struct energy_matrix* em =
-                    &FA_->energy_matrix[(t_i - 1) * n_types + (t_j - 1)];
-                double yval = get_yval(em, static_cast<double>(norm_area));
-                com += yval * static_cast<double>(area);
-
-                // Wall term for severe overlap (same as cffunction)
-                if (d2 <= (OVERLAP_FRAC * rij) * (OVERLAP_FRAC * rij)) {
-                    wall += static_cast<double>(KWALL)
-                            * (std::pow(static_cast<double>(d2), -3.0)
-                               - std::pow(static_cast<double>(OVERLAP_FRAC * rij), -12.0));
-                }
-            }
-        }
-    }
-
-    // Return the combined CF: complementarity minus wall penalty.
-    // Consistent with get_apparent_cf_evalue() = com + wal + sas.
-    return com + wall;
+    if (error) return 0.0;
+    return cf_val; // kcal/mol (attractive values are negative)
 }
 
 // ─── compute_growth_entropy ───────────────────────────────────────────────────

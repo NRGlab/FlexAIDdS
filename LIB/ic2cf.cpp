@@ -192,9 +192,9 @@ cfstr ic2cf(FA_Global* FA,VC_Global* VC,atom* atoms,resid* residue,
 					}
 										
 					struct deelig_node_struct* node = FA->deelig_root_node;
+				bool add = false;
 					
-					bool add = false;
-					for(k=1; k<=res->fdih; k++){
+						for(k=1; k<=res->fdih; k++){
 						std::map<int, struct deelig_node_struct*>::iterator it;
 						it = node->childs.find(deelig_list[k]);
 						
@@ -389,7 +389,7 @@ double get_apparent_cf_evalue(cfstr* cf) {
 #else
 	double get_apparent_cf_evalue(cfstr* cf) {
 #endif
-		return cf->com + cf->wal + cf->sas;
+		return cf->com + cf->wal + cf->sas + cf->elec;
 	}
     
 #ifdef _WIN32
@@ -397,5 +397,5 @@ double get_apparent_cf_evalue(cfstr* cf) {
 #else
 		double get_cf_evalue(cfstr* cf) {
 #endif
-			return cf->com + cf->wal + cf->sas + cf->con;
+			return cf->com + cf->wal + cf->sas + cf->con + cf->elec;
 		}

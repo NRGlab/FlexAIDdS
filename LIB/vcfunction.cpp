@@ -1,6 +1,10 @@
 #include "Vcontacts.h"
+#include <cmath>
 
 #define DEBUG_LEVEL 0
+
+// Coulomb constant: 332.0637 kcal·Å/(mol·e²)
+#define KCOULOMB 332.0637
 
 double vcfunction(FA_Global* FA,VC_Global* VC,atom* atoms,resid* residue, std::vector<std::pair<int,int> > & intraclashes, bool* error)
 {
@@ -8,8 +12,8 @@ double vcfunction(FA_Global* FA,VC_Global* VC,atom* atoms,resid* residue, std::v
 	int    type=1;
 	
 	// reset all values pointed
-	memset(FA->contacts,0,100000*sizeof(int));
-	memset(FA->contributions,0.0f,FA->ntypes*FA->ntypes*sizeof(float));
+	memset(FA->contacts,0,MAX_ATOM_NUMBER*sizeof(int));
+	memset(FA->contributions,0,FA->ntypes*FA->ntypes*sizeof(float));
 	
 	// reset CF values
 	for(int j=0; j<FA->num_optres; ++j){
@@ -17,6 +21,7 @@ double vcfunction(FA_Global* FA,VC_Global* VC,atom* atoms,resid* residue, std::v
 		FA->optres[j].cf.wal=0.0;
 		FA->optres[j].cf.com=0.0;
 		FA->optres[j].cf.con=0.0;
+		FA->optres[j].cf.elec=0.0;
 		FA->optres[j].cf.sas=0.0;
 		FA->optres[j].cf.totsas=0.0;
 	}
@@ -170,7 +175,7 @@ double vcfunction(FA_Global* FA,VC_Global* VC,atom* atoms,resid* residue, std::v
 		       atoms[atomzero].radius);
 #endif
 
-		int contnum = 0;  // number of contacts (excluding bloops away atoms)
+	int contnum = 0;  // number of contacts (excluding bloops away atoms)
 		int currindex = VC->ca_index[i];
 		
 		while(currindex != -1) {
@@ -302,7 +307,7 @@ double vcfunction(FA_Global* FA,VC_Global* VC,atom* atoms,resid* residue, std::v
 				cfs->wal += Ewall;
 
 #if DEBUG_LEVEL > 0
-				Ewall_atm += Ewall_atm;
+				Ewall_atm += Ewall;
 				cfs_atom.wal += Ewall;
 #endif
 				// ligand intramolecular clash exceeds threshold
@@ -318,9 +323,9 @@ double vcfunction(FA_Global* FA,VC_Global* VC,atom* atoms,resid* residue, std::v
 			
 			
 			if( !covalent ){
-				
+
 				if(FA->intramolecular || !intramolecular) {
-					
+
 					double contribution = 0.0;
 					if(energy_matrix->weight){
 						if(FA->normalize_area){
@@ -331,20 +336,40 @@ double vcfunction(FA_Global* FA,VC_Global* VC,atom* atoms,resid* residue, std::v
 					}else{
 						contribution = yval;
 					}
-					
+
 					if(FA->useacs){
 						//printf("USE ACS\n");
 						//printf("default contribution=%.3f\n", contribution);
 						contribution = contribution * atoms[atomzero].acs/surfA * FA->acsweight;
 						//printf("after contribution=%.3f\n", contribution);
 					}
-					
+
 					cfs->com += contribution;
-					
+
+					// Coulomb electrostatic term (distance-dependent dielectric)
+					// Uses RESP charges when available, otherwise standard partial charges.
+					{
+						double qA = atoms[atomzero].has_resp
+						            ? (double)atoms[atomzero].resp_charge
+						            : (double)atoms[atomzero].charge;
+						double qB = atoms[atomcont].has_resp
+						            ? (double)atoms[atomcont].resp_charge
+						            : (double)atoms[atomcont].charge;
+						if(FA->use_elec && qA != 0.0 && qB != 0.0){
+							double dist = VC->ca_rec[currindex].dist;
+							if(dist > 0.5){ // avoid singularity
+								// E_elec = (332.0637 * qA * qB) / (eps * r)
+								// distance-dependent dielectric: eps = dielectric * r
+								double E_elec = KCOULOMB * qA * qB / (FA->dielectric * dist * dist);
+								cfs->elec += E_elec;
+							}
+						}
+					}
+
 #if DEBUG_LEVEL > 0
 					cfs_atom.com += contribution;
 #endif
-					
+
 					FA->contributions[(VC->Calc[i].atom->type-1)*FA->ntypes+(VC->Calc[VC->ca_rec[currindex].atom].atom->type-1)] += contribution;
 					if((VC->Calc[i].atom->type-1) != (VC->Calc[VC->ca_rec[currindex].atom].atom->type-1))
 						FA->contributions[(VC->Calc[VC->ca_rec[currindex].atom].atom->type-1)*FA->ntypes+(VC->Calc[i].atom->type-1)] += contribution;

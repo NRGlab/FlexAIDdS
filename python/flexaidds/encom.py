@@ -125,6 +125,78 @@ def _python_compute_vibrational_entropy(
     )
 
 
+def _read_ca_coords(pdb_path: str) -> np.ndarray:
+    """Read Cα coordinates from a PDB file.
+
+    Returns:
+        (N, 3) NumPy array of Cα positions in Angstroms.
+    """
+    coords = []
+    with open(pdb_path) as fh:
+        for line in fh:
+            if (line.startswith("ATOM") and
+                    line[12:16].strip() == "CA"):
+                x = float(line[30:38])
+                y = float(line[38:46])
+                z = float(line[46:54])
+                coords.append([x, y, z])
+    if not coords:
+        raise ValueError(f"No Cα atoms found in {pdb_path}")
+    return np.array(coords, dtype=np.float64)
+
+
+def _build_enm_modes(
+    coords: np.ndarray,
+    cutoff: float = 9.0,
+) -> List[NormalMode]:
+    """Build an elastic network model and return its normal modes.
+
+    Uses the Anisotropic Network Model (ANM) with uniform spring constant.
+    The Hessian is 3N×3N; eigenvalues below a trivial threshold (first 6
+    modes = translations/rotations) are excluded.
+
+    Args:
+        coords:  (N, 3) array of Cα coordinates.
+        cutoff:  Distance cutoff for spring contacts in Angstroms.
+
+    Returns:
+        List of NormalMode objects (excluding 6 trivial modes).
+    """
+    n = len(coords)
+    hessian = np.zeros((3 * n, 3 * n), dtype=np.float64)
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            diff = coords[j] - coords[i]
+            dist = np.linalg.norm(diff)
+            if dist > cutoff:
+                continue
+            # Spring constant scaled by 1/dist² (ENCoM-like)
+            k = 1.0 / (dist * dist)
+            outer = np.outer(diff, diff) * (k / (dist * dist))
+            ii, jj = 3 * i, 3 * j
+            hessian[ii:ii+3, ii:ii+3] += outer
+            hessian[jj:jj+3, jj:jj+3] += outer
+            hessian[ii:ii+3, jj:jj+3] -= outer
+            hessian[jj:jj+3, ii:ii+3] -= outer
+
+    eigenvalues, eigenvectors = np.linalg.eigh(hessian)
+
+    # Skip first 6 trivial modes (translation + rotation)
+    modes: List[NormalMode] = []
+    for idx in range(6, len(eigenvalues)):
+        lam = float(eigenvalues[idx])
+        if lam < 0:
+            lam = 0.0
+        modes.append(NormalMode(
+            index=idx - 5,
+            eigenvalue=lam,
+            frequency=math.sqrt(lam),
+            eigenvector=eigenvectors[:, idx].tolist(),
+        ))
+    return modes
+
+
 class ENCoMEngine:
     """ENCoM quasi-harmonic entropy calculator.
 
@@ -155,16 +227,20 @@ class ENCoMEngine:
             List of NormalMode objects sorted by mode index.
         """
         if _HAS_CORE:
-            cpp_modes = _core.ENCoMEngine.load_modes(eigenvalue_file, eigenvector_file)
-            return [
-                NormalMode(
-                    index=m.index,
-                    eigenvalue=m.eigenvalue,
-                    frequency=m.frequency,
-                    eigenvector=list(m.eigenvector),
-                )
-                for m in cpp_modes
-            ]
+            try:
+                cpp_modes = _core.ENCoMEngine.load_modes(eigenvalue_file, eigenvector_file)
+                return [
+                    NormalMode(
+                        index=m.index,
+                        eigenvalue=m.eigenvalue,
+                        frequency=m.frequency,
+                        eigenvector=list(m.eigenvector),
+                    )
+                    for m in cpp_modes
+                ]
+            except (AttributeError, RuntimeError):
+                # Fall through to pure-Python implementation if C++ unavailable
+                pass
 
         # Pure-Python fallback
         eigenvalues: List[float] = []
@@ -206,24 +282,29 @@ class ENCoMEngine:
             VibrationalEntropy with S_vib in both kcal/(mol·K) and J/(mol·K).
         """
         if _HAS_CORE:
-            cpp_modes = []
-            for m in modes:
-                cm = _core.NormalMode()
-                cm.index = m.index
-                cm.eigenvalue = m.eigenvalue
-                cm.frequency = m.frequency
-                cm.eigenvector = m.eigenvector
-                cpp_modes.append(cm)
-            vs_cpp = _core.ENCoMEngine.compute_vibrational_entropy(
-                cpp_modes, temperature_K, eigenvalue_cutoff
-            )
-            return VibrationalEntropy(
-                S_vib_kcal_mol_K=vs_cpp.S_vib_kcal_mol_K,
-                S_vib_J_mol_K=vs_cpp.S_vib_J_mol_K,
-                omega_eff=vs_cpp.omega_eff,
-                n_modes=vs_cpp.n_modes,
-                temperature=vs_cpp.temperature,
-            )
+            try:
+                cpp_modes = []
+                for m in modes:
+                    cm = _core.NormalMode()
+                    cm.index = m.index
+                    cm.eigenvalue = m.eigenvalue
+                    cm.frequency = m.frequency
+                    cm.eigenvector = m.eigenvector
+                    cpp_modes.append(cm)
+                eng = _core.ENCoMEngine(eigenvalue_cutoff=eigenvalue_cutoff)
+                vs_cpp = eng.compute_vibrational_entropy(
+                    cpp_modes, temperature_K
+                )
+                return VibrationalEntropy(
+                    S_vib_kcal_mol_K=vs_cpp.S_vib_kcal_mol_K,
+                    S_vib_J_mol_K=vs_cpp.S_vib_J_mol_K,
+                    omega_eff=vs_cpp.omega_eff,
+                    n_modes=vs_cpp.n_modes,
+                    temperature=vs_cpp.temperature,
+                )
+            except (AttributeError, RuntimeError):
+                # Fall through to pure-Python implementation if C++ unavailable
+                pass
 
         return _python_compute_vibrational_entropy(modes, temperature_K, eigenvalue_cutoff)
 
@@ -242,8 +323,47 @@ class ENCoMEngine:
             Total entropy in kcal mol⁻¹ K⁻¹.
         """
         if _HAS_CORE:
-            return _core.ENCoMEngine.total_entropy(S_conf_kcal_mol_K, S_vib_kcal_mol_K)
+            try:
+                return _core.ENCoMEngine.total_entropy(S_conf_kcal_mol_K, S_vib_kcal_mol_K)
+            except (AttributeError, RuntimeError):
+                pass
         return S_conf_kcal_mol_K + S_vib_kcal_mol_K
+
+    @staticmethod
+    def compute_delta_s(
+        apo_pdb: str,
+        holo_pdb: str,
+        eigenvalue_cutoff: float = 1e-6,
+        temperature_K: float = 300.0,
+    ) -> float:
+        """Compute ΔS_vib between apo and holo receptor conformations.
+
+        Builds coarse-grained elastic network models for both structures,
+        computes normal modes via eigenvalue decomposition, then returns
+        the difference in quasi-harmonic vibrational entropy:
+            ΔS_vib = S_vib(holo) − S_vib(apo)
+
+        Args:
+            apo_pdb:            Path to apo (unbound) receptor PDB.
+            holo_pdb:           Path to holo (ligand-bound) receptor PDB.
+            eigenvalue_cutoff:  Modes with λ ≤ cutoff treated as trivial.
+            temperature_K:      Temperature in Kelvin (default 300 K).
+
+        Returns:
+            ΔS_vib in kcal mol⁻¹ K⁻¹ (positive = holo more flexible).
+        """
+        coords_apo = _read_ca_coords(apo_pdb)
+        coords_holo = _read_ca_coords(holo_pdb)
+
+        modes_apo = _build_enm_modes(coords_apo)
+        modes_holo = _build_enm_modes(coords_holo)
+
+        vs_apo = ENCoMEngine.compute_vibrational_entropy(
+            modes_apo, temperature_K, eigenvalue_cutoff)
+        vs_holo = ENCoMEngine.compute_vibrational_entropy(
+            modes_holo, temperature_K, eigenvalue_cutoff)
+
+        return vs_holo.S_vib_kcal_mol_K - vs_apo.S_vib_kcal_mol_K
 
     @staticmethod
     def free_energy_with_vibrations(
@@ -262,7 +382,10 @@ class ENCoMEngine:
             Total free energy including vibrational correction (kcal/mol).
         """
         if _HAS_CORE:
-            return _core.ENCoMEngine.free_energy_with_vibrations(
-                F_electronic, S_vib_kcal_mol_K, temperature_K
-            )
+            try:
+                return _core.ENCoMEngine.free_energy_with_vibrations(
+                    F_electronic, S_vib_kcal_mol_K, temperature_K
+                )
+            except (AttributeError, RuntimeError):
+                pass
         return F_electronic - temperature_K * S_vib_kcal_mol_K

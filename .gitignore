@@ -1,4 +1,9 @@
 *
+# CI and build infrastructure
+!.github
+!.github/**
+!cmake
+!cmake/**
 # source files
 !LIB
 !LIB/**
@@ -10,13 +15,23 @@
 !*.c
 !*.h
 !*.hpp
+!*.mm
+!*.swift
+!*.ts
+!*.tsx
+!*.metal
+# data files (PTM/glycan libraries, charge parameters)
+!data
+!data/**
 # test suite
 !tests
 !tests/**
 # build system
 !CMakeLists.txt
+!CMakePresets.json
 !LICENSE
 !README.md
+!CLAUDE.md
 !VERSION
 # documentation
 !CONTRIBUTING.md
@@ -24,11 +39,26 @@
 !THIRD_PARTY_LICENSES.md
 !docs
 !docs/**
+# swift package
+!swift
+!swift/**
+# typescript package
+!typescript
+!typescript/**
+typescript/**/node_modules
+typescript/**/dist
+# pymol plugin
+!pymol_plugin
+!pymol_plugin/**
+pymol_plugin/**/__pycache__
 # python package
 !python
 !python/**
 python/**/__pycache__
 python/__pycache__
+python/**/*.egg-info
+python/**/*.egg-info/**
+python/**/*.so
 # dependencies files
 !*.def
 !*.dat
@@ -38,3 +68,12 @@ python/__pycache__
 !*.pdb
 !*.inp.pdb
 !*.clef.pdb
+# website (GitHub Pages)
+!site
+!site/**
+# scripts
+!scripts
+!scripts/**
+# standalone tools / simulation drivers
+!tools
+!tools/**

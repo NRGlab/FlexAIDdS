@@ -10,8 +10,15 @@
 //
 // All sums use log-sum-exp for numerical stability when energies span
 // hundreds of kcal/mol (common in docking).
+//
+// Hardware dispatch (runtime via hardware_dispatch layer):
+//   1. AVX-512 16-wide SIMD (+ OpenMP)
+//   2. Eigen3 vectorised array ops (auto-vectorises to AVX2/AVX-512)
+//   3. OpenMP parallel reductions for large ensembles
+//   4. Scalar fallback (always available)
 
 #include "statmech.h"
+#include "hardware_dispatch.h"
 
 #include <cmath>
 #include <algorithm>
@@ -19,7 +26,25 @@
 #include <limits>
 #include <stdexcept>
 
+#ifdef FLEXAIDS_HAS_EIGEN
+#  include <Eigen/Dense>
+#endif
+
+#ifdef _OPENMP
+#  include <omp.h>
+#endif
+
+#if defined(__AVX512F__) && defined(__AVX512DQ__)
+#  include <immintrin.h>
+#  define STATMECH_HAS_AVX512 1
+#else
+#  define STATMECH_HAS_AVX512 0
+#endif
+
 namespace statmech {
+
+// Threshold above which OpenMP parallelisation pays off for reductions.
+static constexpr std::size_t OMP_THRESHOLD = 4096;
 
 // ─── construction ────────────────────────────────────────────────────────────
 
@@ -40,13 +65,9 @@ void StatMechEngine::add_sample(double energy, int multiplicity) {
 // ─── log_sum_exp ─────────────────────────────────────────────────────────────
 
 double StatMechEngine::log_sum_exp(std::span<const double> x) {
-    if (x.empty()) return -std::numeric_limits<double>::infinity();
-    double x_max = *std::max_element(x.begin(), x.end());
-    if (x_max == -std::numeric_limits<double>::infinity()) return x_max;
-    double sum = 0.0;
-    for (double v : x)
-        sum += std::exp(v - x_max);
-    return x_max + std::log(sum);
+    // Delegate to the unified hardware dispatch layer which handles
+    // AVX-512, Eigen, OpenMP, and scalar paths with runtime selection.
+    return flexaids::log_sum_exp_dispatch(x);
 }
 
 // ─── compute ─────────────────────────────────────────────────────────────────
@@ -59,9 +80,24 @@ Thermodynamics StatMechEngine::compute() const {
 
     // Build array of log-weights:  w_i = ln(n_i) − β E_i
     std::vector<double> log_w(N);
+
+#ifdef FLEXAIDS_HAS_EIGEN
+    // Eigen-vectorised log-weight construction
+    {
+        Eigen::ArrayXd counts(static_cast<Eigen::Index>(N));
+        Eigen::ArrayXd energies(static_cast<Eigen::Index>(N));
+        for (std::size_t i = 0; i < N; ++i) {
+            counts(static_cast<Eigen::Index>(i))   = static_cast<double>(ensemble_[i].count);
+            energies(static_cast<Eigen::Index>(i)) = ensemble_[i].energy;
+        }
+        Eigen::ArrayXd lw = counts.log() - beta_ * energies;
+        Eigen::Map<Eigen::ArrayXd>(log_w.data(), static_cast<Eigen::Index>(N)) = lw;
+    }
+#else
     for (std::size_t i = 0; i < N; ++i)
         log_w[i] = std::log(static_cast<double>(ensemble_[i].count)) -
                    beta_ * ensemble_[i].energy;
+#endif
 
     double lnZ = log_sum_exp(log_w);
 
@@ -70,11 +106,66 @@ Thermodynamics StatMechEngine::compute() const {
     // To keep stability: ⟨E⟩ = Σ E_i exp(log_w_i − lnZ)
     double E_avg  = 0.0;
     double E2_avg = 0.0;
-    for (std::size_t i = 0; i < N; ++i) {
-        double p_i = std::exp(log_w[i] - lnZ);
-        double Ei  = ensemble_[i].energy;
-        E_avg  += p_i * Ei;
-        E2_avg += p_i * Ei * Ei;
+
+    // Build contiguous energy array for vectorised paths.
+    std::vector<double> energies_vec(N);
+    for (std::size_t i = 0; i < N; ++i)
+        energies_vec[i] = ensemble_[i].energy;
+
+#if STATMECH_HAS_AVX512
+    // AVX-512 path: 8-wide fused probability × energy moment accumulation.
+    if (N >= 16) {
+        __m512d v_Eavg  = _mm512_setzero_pd();
+        __m512d v_E2avg = _mm512_setzero_pd();
+        __m512d v_lnZ   = _mm512_set1_pd(lnZ);
+
+        std::size_t i = 0;
+        for (; i + 7 < N; i += 8) {
+            __m512d v_lw = _mm512_loadu_pd(log_w.data() + i);
+            __m512d v_E  = _mm512_loadu_pd(energies_vec.data() + i);
+
+            // p_i = exp(log_w_i - lnZ)
+            __m512d v_arg = _mm512_sub_pd(v_lw, v_lnZ);
+            alignas(64) double tmp_exp[8];
+            _mm512_storeu_pd(tmp_exp, v_arg);
+            for (int k = 0; k < 8; ++k) tmp_exp[k] = std::exp(tmp_exp[k]);
+            __m512d v_p = _mm512_loadu_pd(tmp_exp);
+
+            // Accumulate p_i * E_i and p_i * E_i^2
+            v_Eavg  = _mm512_fmadd_pd(v_p, v_E, v_Eavg);
+            v_E2avg = _mm512_fmadd_pd(v_p, _mm512_mul_pd(v_E, v_E), v_E2avg);
+        }
+        E_avg  = _mm512_reduce_add_pd(v_Eavg);
+        E2_avg = _mm512_reduce_add_pd(v_E2avg);
+
+        // Scalar tail
+        for (; i < N; ++i) {
+            double p_i = std::exp(log_w[i] - lnZ);
+            double Ei  = energies_vec[i];
+            E_avg  += p_i * Ei;
+            E2_avg += p_i * Ei * Ei;
+        }
+    } else
+#endif
+
+#ifdef FLEXAIDS_HAS_EIGEN
+    // Eigen vectorised path: auto-vectorises to AVX2/AVX-512 via Eigen's backend.
+    if (N >= 16) {
+        Eigen::Map<const Eigen::ArrayXd> lw(log_w.data(), static_cast<Eigen::Index>(N));
+        Eigen::Map<const Eigen::ArrayXd> E(energies_vec.data(), static_cast<Eigen::Index>(N));
+
+        Eigen::ArrayXd probs = (lw - lnZ).exp();
+        E_avg  = (probs * E).sum();
+        E2_avg = (probs * E * E).sum();
+    } else
+#endif
+    {
+        for (std::size_t i = 0; i < N; ++i) {
+            double p_i = std::exp(log_w[i] - lnZ);
+            double Ei  = energies_vec[i];
+            E_avg  += p_i * Ei;
+            E2_avg += p_i * Ei * Ei;
+        }
     }
 
     double kT  = kB_kcal * T_;
@@ -97,16 +188,25 @@ Thermodynamics StatMechEngine::compute() const {
 std::vector<double> StatMechEngine::boltzmann_weights() const {
     if (ensemble_.empty()) return {};
 
-    std::vector<double> log_w(ensemble_.size());
-    for (std::size_t i = 0; i < ensemble_.size(); ++i)
-        log_w[i] = std::log(static_cast<double>(ensemble_[i].count)) -
-                   beta_ * ensemble_[i].energy;
+    const std::size_t N = ensemble_.size();
 
-    double lnZ = log_sum_exp(log_w);
+    // Build raw energy array and use the unified dispatch layer.
+    std::vector<double> energies(N);
+    for (std::size_t i = 0; i < N; ++i)
+        energies[i] = ensemble_[i].energy;
 
-    std::vector<double> w(ensemble_.size());
-    for (std::size_t i = 0; i < ensemble_.size(); ++i)
-        w[i] = std::exp(log_w[i] - lnZ);
+    auto result = flexaids::compute_boltzmann_batch(energies, beta_);
+
+    // Normalise weights accounting for multiplicities.
+    std::vector<double> w(N);
+    double Z_with_mult = 0.0;
+    for (std::size_t i = 0; i < N; ++i)
+        Z_with_mult += ensemble_[i].count * result.weights[i];
+
+    if (Z_with_mult > 0.0) {
+        for (std::size_t i = 0; i < N; ++i)
+            w[i] = ensemble_[i].count * result.weights[i] / Z_with_mult;
+    }
     return w;
 }
 
@@ -126,11 +226,11 @@ double StatMechEngine::helmholtz(std::span<const double> energies, double T) {
     if (energies.empty())
         throw std::invalid_argument("helmholtz: empty energy list");
     double beta = 1.0 / (kB_kcal * T);
-    std::vector<double> neg_beta_E(energies.size());
-    for (std::size_t i = 0; i < energies.size(); ++i)
-        neg_beta_E[i] = -beta * energies[i];
-    double lnZ = log_sum_exp(neg_beta_E);
-    return -(kB_kcal * T) * lnZ;
+
+    // Use unified dispatch for the Boltzmann batch computation.
+    auto result = flexaids::compute_boltzmann_batch(energies, beta);
+    // F = -kT * ln(Z) where log_Z already accounts for E_min shift.
+    return -(kB_kcal * T) * result.log_Z;
 }
 
 // ─── replica exchange ────────────────────────────────────────────────────────
@@ -188,22 +288,56 @@ std::vector<WHAMBin> StatMechEngine::wham(
     const std::size_t N = energies.size();
     double beta = 1.0 / (kB_kcal * temperature);
 
-    // Find coordinate range
-    double cmin = *std::min_element(coordinates.begin(), coordinates.end());
-    double cmax = *std::max_element(coordinates.begin(), coordinates.end());
+    // Find coordinate range (single pass)
+    auto [cmin_it, cmax_it] = std::minmax_element(coordinates.begin(), coordinates.end());
+    double cmin = *cmin_it;
+    double cmax = *cmax_it;
     double bin_w = (cmax - cmin) / n_bins;
     if (bin_w <= 0.0) bin_w = 1.0;
 
-    // Histogram + Boltzmann-weighted histogram
+    // Histogram + Boltzmann-weighted histogram.
+    // Use the dispatch layer for the Boltzmann weight computation,
+    // then bin the pre-computed weights for O(N) histogramming.
+    auto boltz_result = flexaids::compute_boltzmann_batch(energies, beta);
+
     std::vector<double> raw_count(static_cast<std::size_t>(n_bins), 0.0);
     std::vector<double> boltz_sum(static_cast<std::size_t>(n_bins), 0.0);
+    double inv_bw = 1.0 / bin_w;
 
-    for (std::size_t i = 0; i < N; ++i) {
-        int b = static_cast<int>((coordinates[i] - cmin) / bin_w);
-        if (b < 0) b = 0;
-        if (b >= n_bins) b = n_bins - 1;
-        raw_count[static_cast<std::size_t>(b)] += 1.0;
-        boltz_sum[static_cast<std::size_t>(b)] += std::exp(-beta * energies[i]);
+#ifdef _OPENMP
+    // OpenMP parallel histogram with per-thread private bins
+    if (N >= OMP_THRESHOLD) {
+        int n_threads = omp_get_max_threads();
+        std::vector<std::vector<double>> t_raw(n_threads,
+            std::vector<double>(static_cast<std::size_t>(n_bins), 0.0));
+        std::vector<std::vector<double>> t_boltz(n_threads,
+            std::vector<double>(static_cast<std::size_t>(n_bins), 0.0));
+
+        #pragma omp parallel for schedule(static)
+        for (int i = 0; i < static_cast<int>(N); ++i) {
+            int tid = omp_get_thread_num();
+            int b = static_cast<int>((coordinates[i] - cmin) * inv_bw);
+            b = std::min(std::max(b, 0), n_bins - 1);
+            t_raw[tid][static_cast<std::size_t>(b)]  += 1.0;
+            t_boltz[tid][static_cast<std::size_t>(b)] += boltz_result.weights[i];
+        }
+        // Reduce thread-private histograms
+        for (auto& tr : t_raw)
+            for (int b = 0; b < n_bins; ++b)
+                raw_count[static_cast<std::size_t>(b)] += tr[static_cast<std::size_t>(b)];
+        for (auto& tb : t_boltz)
+            for (int b = 0; b < n_bins; ++b)
+                boltz_sum[static_cast<std::size_t>(b)] += tb[static_cast<std::size_t>(b)];
+    } else
+#endif
+    {
+        for (std::size_t i = 0; i < N; ++i) {
+            int b = static_cast<int>((coordinates[i] - cmin) / bin_w);
+            if (b < 0) b = 0;
+            if (b >= n_bins) b = n_bins - 1;
+            raw_count[static_cast<std::size_t>(b)] += 1.0;
+            boltz_sum[static_cast<std::size_t>(b)] += boltz_result.weights[i];
+        }
     }
 
     // Free energy per bin: F_b = −kT ln( weighted_count_b / raw_count_b )
@@ -212,6 +346,28 @@ std::vector<WHAMBin> StatMechEngine::wham(
     std::vector<double> f_new(static_cast<std::size_t>(n_bins), 0.0);
 
     for (int iter = 0; iter < max_iter; ++iter) {
+#ifdef FLEXAIDS_HAS_EIGEN
+        // Eigen vectorised WHAM self-consistency update
+        Eigen::Map<const Eigen::ArrayXd> rc(raw_count.data(), n_bins);
+        Eigen::Map<const Eigen::ArrayXd> bs(boltz_sum.data(), n_bins);
+        Eigen::Map<Eigen::ArrayXd> fn(f_new.data(), n_bins);
+        Eigen::Map<Eigen::ArrayXd> fo(f_old.data(), n_bins);
+
+        // F_b = -kT * ln(boltz_sum_b / raw_count_b) where raw_count_b > 0
+        auto occupied = (rc > 0.0);
+        Eigen::ArrayXd safe_rc = occupied.select(rc, Eigen::ArrayXd::Ones(n_bins));
+        fn = occupied.select(
+            -(kB_kcal * temperature) * (bs / safe_rc).log(),
+            Eigen::ArrayXd::Zero(n_bins));
+
+        // Shift so minimum = 0
+        fn -= fn.minCoeff();
+
+        // Check convergence
+        double maxdiff = (fn - fo).abs().maxCoeff();
+        fo = fn;
+        if (maxdiff < tolerance) break;
+#else
         for (int b = 0; b < n_bins; ++b) {
             if (raw_count[static_cast<std::size_t>(b)] > 0.0) {
                 f_new[static_cast<std::size_t>(b)] = -(kB_kcal * temperature) *
@@ -221,16 +377,26 @@ std::vector<WHAMBin> StatMechEngine::wham(
                 f_new[static_cast<std::size_t>(b)] = 0.0;
             }
         }
+#endif
+
         // Shift so minimum = 0
         double fmin = *std::min_element(f_new.begin(), f_new.end());
         for (auto& f : f_new) f -= fmin;
 
         // Check convergence
         double maxdiff = 0.0;
+#ifdef FLEXAIDS_HAS_EIGEN
+        {
+            Eigen::Map<const Eigen::ArrayXd> fn(f_new.data(), n_bins);
+            Eigen::Map<const Eigen::ArrayXd> fo(f_old.data(), n_bins);
+            maxdiff = (fn - fo).abs().maxCoeff();
+        }
+#else
         for (int b = 0; b < n_bins; ++b)
             maxdiff = std::max(maxdiff,
                 std::abs(f_new[static_cast<std::size_t>(b)] -
                          f_old[static_cast<std::size_t>(b)]));
+#endif
         f_old = f_new;
         if (maxdiff < tolerance) break;
     }
@@ -272,10 +438,19 @@ BoltzmannLUT::BoltzmannLUT(double beta, double e_min, double e_max, int n_bins)
     if (range <= 0.0) range = 1.0;
     inv_bin_width_ = n_bins / range;
 
+#ifdef FLEXAIDS_HAS_EIGEN
+    // Eigen-vectorised LUT initialisation
+    {
+        Eigen::ArrayXd idx = Eigen::ArrayXd::LinSpaced(n_bins, 0.5, n_bins - 0.5);
+        Eigen::ArrayXd E = e_min + idx * (range / n_bins);
+        Eigen::Map<Eigen::ArrayXd>(table_.data(), n_bins) = (-beta * E).exp();
+    }
+#else
     for (int i = 0; i < n_bins; ++i) {
         double e = e_min + (static_cast<double>(i) + 0.5) * range / n_bins;
         table_[static_cast<std::size_t>(i)] = std::exp(-beta * e);
     }
+#endif
 }
 
 double BoltzmannLUT::operator()(double energy) const noexcept {

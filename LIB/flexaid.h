@@ -42,6 +42,7 @@
 #define MAX_NUM_ATM 10000           // max number of atoms allowed 
 #define MAX_ATM_HET 200             // max number of atoms in het groups allowed 
 //#define MAX_FLEX_BONDS 20           // max number of flexible bonds for het groups
+#define MAX_ATOM_NUMBER 100000      // Max PDB atom number for contacts/num_atm arrays
 #define MAX_GRID_POINTS 1000        // Total number of points to anchor ligand
 #define MAX_NORMAL_GRID 5000        // max number of grid points in normal grid
 #define MAX_SPHERE_POINTS 610       // Total number of points in atom surface sphere 
@@ -105,6 +106,7 @@ struct cf_str{  // Complementarity Function value structure
 	double con;    // constraint value
 	double wal;    // wall term
 	double sas;    // solvent accessibility surface
+	double elec;   // electrostatic (Coulomb) energy
 	double totsas; // overall sas of molecule
 	int   rclash; // flag that shows whether the residue is making steric clashes
 };
@@ -176,7 +178,7 @@ struct atom_struct{  // atom structure
 	float  coor[3];     // processing coordinates
 	float* coor_ref;    // reference coordinates
 	float  coor_ori[3]; // original coordinates
-	
+
 	int    number;  // atom number according to PDB file
 	float  radius;  // atomic radius
 	int    type;    // atom type
@@ -188,18 +190,25 @@ struct atom_struct{  // atom structure
 	float  dih;     // dihedral between atom, rec[0], rec[1] and rec[2]
 	float  shift;   // gives the angle shift from that of rec[3]'s atom
 	float  acs;     // accessible contact surface
+	float  charge;  // partial atomic charge (e.g. RESP from MOL2)
 	int    ncons;   // number of constraint for atoms
 	int    isbb;    // atom is a backbone atom
 	int    graph;   // id of graph atom belongs to (ligands only)
-	
+
 	optmap* par;    // if this atom defines a variable (translational/rotational or dihedrals)
 	constraint** cons; // points to constraint , if NULL no constraint to atom
 	OptRes* optres;  // pointer to optimised residue list
 	float** eigen;   // eigen vectors
-	
+
 	int    rec[4];  // atom number to be used when reconstructing the atom coordinates from internal coordinates
 	char   name[5]; // atom name
 	char   element[3]; // element name
+
+	// ── PTM / RESP charge support ──
+	float  resp_charge;   // RESP partial charge (0.0 = not assigned; uses type-based scoring)
+	int    has_resp;       // flag: 1 if resp_charge was explicitly set, 0 otherwise
+	int    is_ptm;         // flag: 1 if this atom was added by PTM attachment
+	int    ptm_parent;     // atom number of the attachment point (valid when is_ptm=1)
 };
 typedef struct atom_struct atom;
 
@@ -330,6 +339,7 @@ struct FA_Global_struct{
 	float maxdst;                        // max distance from a protein atom to PCG 
 	float cluster_rmsd;                  // rmsd between poses when clustering
 	char  clustering_algorithm[3];
+	bool  use_super_cluster;             // use SUPER_CLUSTER_ONLY mode for faster clustering
 	uint temperature;					 // temperature parameter 
 	double beta;						 // Metropolis ß parament == 1/T *may be worth trying 1/kT*
 	float permeability;                  // allow permeability or not between atoms
@@ -337,6 +347,9 @@ struct FA_Global_struct{
 	int   intramolecular;                // consider intramolecular forces (ligand only)
 	float solventterm;                   // solvent penalty term
 	float intrafraction;                 // intramolecular fraction interaction
+
+	int   use_elec;                      // enable Coulomb electrostatic scoring
+	float dielectric;                    // distance-dependent dielectric constant (default 4.0)
 
 	constraint* constraints;             // list of constraints
 	int num_constraints;                 // constraints counter
@@ -350,6 +363,9 @@ struct FA_Global_struct{
 	int   res_cnt;                       // total number of residues
 	int   exclude_het;                   // exclude HET groups when calculating CF
 	int   remove_water;                  // exclude water molecules (HET=HOH)
+	int   keep_ions;                     // retain metal ions even when exclude_het=1
+	int   keep_structural_waters;        // retain low-B-factor crystallographic waters
+	float structural_water_bfactor_max;  // B-factor cutoff for structural waters (Å²)
 	int   output_range;                  // outputs Sphere or Grid file(s)
 
 	int     bloops;                      // exclude interactions with atoms n bloops away (exclude dis-ang preferably)
@@ -397,6 +413,7 @@ struct FA_Global_struct{
 	int   skipped;                       // atoms skipped due to faliures in generating the polyhedron
 	int   clashed;                       // skipped individuals due to steric clashes
 	int   omit_buried;                   // skip buried atoms in the Vcontacts procedure
+	int   assume_folded;                 // assume receptor is fully folded — skip NATURaL co-translational/co-transcriptional chain growth
 	int   vindex;                        // use indexed boxes and atoms in Vcontacts index_proteins
 
 	//rot    rotamer[MAX_ROTLIBSIZE];       // array of rotamer library rotamers OR observed rotamer list
@@ -582,7 +599,9 @@ double get_cf_evalue(cfstr* cf);
 
 double GetValueFromGaussian(double x,double max,double zero);
 
-void modify_pdb(char* infile, char* outfile, int exclude_het, int remove_water, int is_protein); // reorder protein atoms in PDB file
+void modify_pdb(char* infile, char* outfile, int exclude_het, int remove_water, int is_protein,
+                int keep_ions=1, int keep_structural_waters=1,
+                float structural_water_bfactor_max=20.0f); // reorder protein atoms in PDB file
 int rna_structure(char* infile);
 int get_NextLine(char lines[][100], int nlines);
 int is_rna_structure(char* infile);

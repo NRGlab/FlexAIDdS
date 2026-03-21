@@ -68,7 +68,7 @@ void DensityPeak_cluster(FA_Global* FA, GB_Global* GB, VC_Global* VC, chromosome
 			pChrom->CF = 0.0;
 			pChrom->DP = NULL;
 			pChrom->Distance = 0.0;
-			memset(pChrom->Coord, 0.0, 3*MAX_ATM_HET);
+			memset(pChrom->Coord, 0, 3*MAX_ATM_HET);
 			if(Entropic) { partition_function += pow( E, ((-1.0) * FA->beta * pChrom->Chromosome->app_evalue) ); }
 		}
 	}
@@ -88,13 +88,13 @@ void DensityPeak_cluster(FA_Global* FA, GB_Global* GB, VC_Global* VC, chromosome
 		fprintf(stderr,"ERROR: memory allocation error for RMSD matrix.\n");
 		Terminate(2);
 	}
-	memset(RMSD, 0.0, sizeChrom);
+	memset(RMSD, 0, sizeChrom);
 	// (1) Build Chromosome Cartesian Coordinates
 	for(i = 0; i < num_chrom; ++i)
 	{
 		pChrom = &Chrom[i];
 		if(i+1 == num_chrom) calc_rmsd_chrom(FA,GB,chrom,gene_lim,atoms,residue,cleftgrid,GB->num_genes,i,i, pChrom->Coord, NULL, false);
-        else calc_rmsd_chrom(FA,GB,chrom,gene_lim,atoms,residue,cleftgrid,GB->num_genes,i,i+1, pChrom->Coord, (pChrom++)->Coord, false);
+        else calc_rmsd_chrom(FA,GB,chrom,gene_lim,atoms,residue,cleftgrid,GB->num_genes,i,i+1, pChrom->Coord, Chrom[i+1].Coord, false);
 	}
 
 	// (2) Build RMSD Matrix
@@ -238,8 +238,8 @@ void DensityPeak_cluster(FA_Global* FA, GB_Global* GB, VC_Global* VC, chromosome
 	pChrom = NULL;
 	nClusters = 0;
 	stddev = calculate_stddev(Chrom, num_chrom);
-	mean = calculate_mean(Chrom, num_chrom);
 	for(i = 1; i < num_chrom; ++i)
+	mean = calculate_mean(Chrom, num_chrom);
 	{
 		iChrom = &Chrom[i];
 		iiChrom = &Chrom[i-1];
@@ -535,7 +535,6 @@ void DensityPeak_cluster(FA_Global* FA, GB_Global* GB, VC_Global* VC, chromosome
 
     printf("there is %d pairwise-chromosomes with similar (x < 0.0001) RMSD values.\n", k);
     
-	// Need to modify write_rrd.c OR  
 	if(FA->refstructure == 1) { write_DensityPeak_rrd(FA,GB,chrom,gene_lim,atoms,residue,cleftgrid,Chrom,Clust,RMSD,end_strfile); }
 
 	

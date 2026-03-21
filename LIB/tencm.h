@@ -90,11 +90,18 @@ public:
     // Predicted Cα B-factors at given T (Å²)
     std::vector<float> bfactors(float temperature) const;
 
+    // Build directly from Cα coordinates (no FA atom/resid dependency).
+    // ca_coords: sequential Cα positions (x,y,z) along the chain.
+    void build_from_ca(const std::vector<std::array<float,3>>& ca_coords,
+                       float cutoff = DEFAULT_RC,
+                       float k0     = DEFAULT_K0);
+
     // Getters
     int n_residues() const noexcept { return static_cast<int>(ca_.size()); }
     int n_bonds()    const noexcept { return static_cast<int>(bonds_.size()); }
     const std::vector<NormalMode>& modes() const noexcept { return modes_; }
     bool is_built()  const noexcept { return built_; }
+    const std::vector<std::array<float,3>>& ca_positions() const noexcept { return ca_; }
 
 private:
     // Internal Cα coordinate store (row-major, index = sequential residue idx)
@@ -110,6 +117,11 @@ private:
 
     // Hessian stored as dense symmetric matrix (n_bonds × n_bonds)
     std::vector<double> H_;
+
+    // Cached Jacobian matrix: J_cached_[k*N + i] = {Jx, Jy, Jz}
+    // Pre-computed once during assemble_hessian(), reused by bfactors()/sample().
+    std::vector<std::array<float,3>> J_cached_;
+    bool jac_cached_ = false;
 
     bool  built_  = false;
     float cutoff_ = DEFAULT_RC;

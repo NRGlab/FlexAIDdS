@@ -14,22 +14,35 @@ jobs:
     name: Pure Python results tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pytest
-      - name: Run read-only loader tests
+          python -m pip install pytest numpy
+      - name: Run pure-Python tests (no C++ extension needed)
         run: |
+          python -m pip install scipy
           PYTHONPATH=python pytest -q \
             python/tests/test_results_io.py \
-            python/tests/test_results_loader_models.py
+            python/tests/test_results_loader_models.py \
+            python/tests/test_pdb_io.py \
+            python/tests/test_import_fallback.py \
+            python/tests/test_py_statmech.py \
+            python/tests/test_thermodynamics_dataclass.py \
+            python/tests/test_models.py \
+            python/tests/test_version.py \
+            python/tests/test_io.py \
+            python/tests/test_cli.py \
+            python/tests/test_docking.py \
+            python/tests/test_results.py \
+            python/tests/test_energy_matrix.py \
+            python/tests/test_train_256x256.py
 
   cxx_core_build:
-    name: C++ core build (${{ matrix.name }})
+    name: C++ core (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -47,8 +60,12 @@ jobs:
             os: macos-latest
             cc: clang
             cxx: clang++
+          - name: windows-msvc
+            os: windows-latest
+            cc: cl
+            cxx: cl
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -58,24 +75,62 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install cmake ninja libomp eigen
-      - name: Configure
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        run: |
+          choco install ninja eigen -y
+        shell: cmd
+      - name: Configure (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           export CC=${{ matrix.cc }}
           export CXX=${{ matrix.cxx }}
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DFLEXAIDS_USE_CUDA=OFF \
-            -DFLEXAIDS_USE_METAL=OFF \
+          CMAKE_ARGS=(
+            -S . -B build -G Ninja
+            -DCMAKE_BUILD_TYPE=Release
+            -DFLEXAIDS_USE_CUDA=OFF
+            -DFLEXAIDS_USE_METAL=OFF
             -DBUILD_PYTHON_BINDINGS=OFF
-      - name: Build
+            -DBUILD_TESTING=ON
+          )
+          # Homebrew on Apple Silicon installs to /opt/homebrew
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="$(brew --prefix)")
+          fi
+          cmake "${CMAKE_ARGS[@]}"
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake -S . -B build -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_C_COMPILER=cl ^
+            -DCMAKE_CXX_COMPILER=cl ^
+            -DFLEXAIDS_USE_CUDA=OFF ^
+            -DFLEXAIDS_USE_METAL=OFF ^
+            -DFLEXAIDS_USE_OPENMP=OFF ^
+            -DFLEXAIDS_USE_EIGEN=OFF ^
+            -DBUILD_PYTHON_BINDINGS=OFF ^
+            -DBUILD_TESTING=ON
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
         run: cmake --build build --parallel
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
 
   python_bindings_smoke:
     name: Python bindings smoke test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -84,12 +139,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build
           python -m pip install --upgrade pip
-          python -m pip install 'pybind11[global]' pytest
+          python -m pip install 'pybind11[global]' pytest numpy
       - name: Configure Python bindings
         run: |
           cmake -S . -B build-python -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_PYTHON_BINDINGS=ON \
+            -DPYBIND11_FINDPYTHON=ON \
             -DFLEXAIDS_USE_OPENMP=OFF \
             -DFLEXAIDS_USE_EIGEN=OFF \
             -DFLEXAIDS_USE_CUDA=OFF \
@@ -97,6 +153,13 @@ jobs:
             -DCMAKE_LIBRARY_OUTPUT_DIRECTORY=${{ github.workspace }}/python/flexaidds
       - name: Build Python extension
         run: cmake --build build-python --parallel --target _core
-      - name: Run statmech smoke test
+      - name: Run Python binding tests
         run: |
-          PYTHONPATH=python pytest -q python/tests/test_statmech_smoke.py
+          python -m pip install scipy
+          PYTHONPATH=python pytest -q \
+            python/tests/test_statmech_smoke.py \
+            python/tests/test_statmech.py \
+            python/tests/test_thermodynamics.py \
+            python/tests/test_encom.py \
+            python/tests/test_energy_matrix.py \
+            python/tests/test_train_256x256.py

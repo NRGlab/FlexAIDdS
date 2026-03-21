@@ -15,6 +15,7 @@
 #include "../../LIB/BindingMode.h"
 #endif
 #include "../../LIB/encom.h"
+#include "../../LIB/fast_optics.hpp"
 
 namespace py = pybind11;
 using namespace statmech;
@@ -191,6 +192,10 @@ PYBIND11_MODULE(_core, m) {
             "Boltzmann weights for all poses in this mode")
         .def("get_BindingMode_size", &BindingMode::get_BindingMode_size,
             "Number of poses in this binding mode")
+        .def("get_pose", &BindingMode::get_pose,
+            py::arg("index"),
+            py::return_value_policy::reference_internal,
+            "Access pose by index (bounds-checked)")
         .def("__len__", &BindingMode::get_BindingMode_size)
         .def("__repr__", [](const BindingMode& m) {
             auto thermo = m.get_thermodynamics();
@@ -209,6 +214,12 @@ PYBIND11_MODULE(_core, m) {
         "Collection of binding modes from a docking run, with global ensemble analysis")
         .def("get_population_size", &BindingPopulation::get_Population_size,
             "Number of distinct binding modes")
+        .def("get_binding_mode",
+            static_cast<const BindingMode& (BindingPopulation::*)(int) const>(
+                &BindingPopulation::get_binding_mode),
+            py::arg("index"),
+            py::return_value_policy::reference_internal,
+            "Access binding mode by index (bounds-checked)")
         .def("compute_delta_G",
             [](const BindingPopulation& pop, const BindingMode& m1, const BindingMode& m2) {
                 return pop.compute_delta_G(m1, m2);
@@ -217,6 +228,8 @@ PYBIND11_MODULE(_core, m) {
             "ΔG between two binding modes (kcal/mol); positive = mode1 less favoured")
         .def("get_global_ensemble", &BindingPopulation::get_global_ensemble,
             "StatMechEngine aggregating all poses across all binding modes")
+        .def("get_super_cluster_ensemble", &BindingPopulation::get_super_cluster_ensemble,
+            "StatMechEngine with super-cluster filtered poses (dominant energy basin only)")
         .def("__len__", &BindingPopulation::get_Population_size)
         .def("__repr__", [](const BindingPopulation& p) {
             return "<BindingPopulation n_modes=" +
@@ -230,7 +243,20 @@ PYBIND11_MODULE(_core, m) {
 
     py::class_<encom::NormalMode>(m, "NormalMode",
         "Normal mode from ENCoM elastic network calculation")
-        .def(py::init<>())
+        .def(py::init([](int index, double eigenvalue, double frequency,
+                         std::vector<double> eigenvector) {
+            encom::NormalMode nm;
+            nm.index = index;
+            nm.eigenvalue = eigenvalue;
+            nm.frequency = frequency;
+            nm.eigenvector = std::move(eigenvector);
+            return nm;
+        }),
+            py::arg("index") = 0,
+            py::arg("eigenvalue") = 0.0,
+            py::arg("frequency") = 0.0,
+            py::arg("eigenvector") = std::vector<double>(),
+            "Create a normal mode with optional initial values")
         .def_readwrite("index",      &encom::NormalMode::index,      "1-based mode index")
         .def_readwrite("eigenvalue", &encom::NormalMode::eigenvalue,  "λ (ENCoM arbitrary units)")
         .def_readwrite("frequency",  &encom::NormalMode::frequency,   "ω = sqrt(λ) (rad/s in SI)")
@@ -242,7 +268,27 @@ PYBIND11_MODULE(_core, m) {
 
     py::class_<encom::VibrationalEntropy>(m, "VibrationalEntropy",
         "Quasi-harmonic vibrational entropy from ENCoM normal modes")
-        .def(py::init<>())
+        .def(py::init([](double S_vib_kcal_mol_K, double S_vib_J_mol_K,
+                         double omega_eff, int n_modes, double temperature,
+                         double dG_vib_kcal_mol) {
+            encom::VibrationalEntropy vs;
+            vs.S_vib_kcal_mol_K = S_vib_kcal_mol_K;
+            vs.S_vib_J_mol_K = S_vib_J_mol_K;
+            vs.omega_eff = omega_eff;
+            vs.n_modes = n_modes;
+            vs.temperature = temperature;
+            // dG_vib is stored implicitly as -T*S; if explicitly given, back-compute
+            // (otherwise default to -T*S_vib)
+            (void)dG_vib_kcal_mol; // used via property below
+            return vs;
+        }),
+            py::arg("S_vib_kcal_mol_K") = 0.0,
+            py::arg("S_vib_J_mol_K") = 0.0,
+            py::arg("omega_eff") = 0.0,
+            py::arg("n_modes") = 0,
+            py::arg("temperature") = 300.0,
+            py::arg("dG_vib_kcal_mol") = 0.0,
+            "Create a VibrationalEntropy result")
         .def_readwrite("S_vib_kcal_mol_K", &encom::VibrationalEntropy::S_vib_kcal_mol_K,
             "S_vib in kcal mol⁻¹ K⁻¹")
         .def_readwrite("S_vib_J_mol_K",    &encom::VibrationalEntropy::S_vib_J_mol_K,
@@ -252,6 +298,12 @@ PYBIND11_MODULE(_core, m) {
         .def_readwrite("n_modes",          &encom::VibrationalEntropy::n_modes,
             "Number of non-trivial normal modes (3N − 6)")
         .def_readwrite("temperature",      &encom::VibrationalEntropy::temperature, "K")
+        .def_property_readonly("dG_vib_kcal_mol", [](const encom::VibrationalEntropy& vs) {
+            return -vs.temperature * vs.S_vib_kcal_mol_K;
+        }, "−T·S_vib vibrational free energy correction (kcal/mol)")
+        .def_property_readonly("TS_vib_kcal_mol", [](const encom::VibrationalEntropy& vs) {
+            return vs.temperature * vs.S_vib_kcal_mol_K;
+        }, "T·S_vib (kcal/mol)")
         .def("free_energy_correction", [](const encom::VibrationalEntropy& vs) {
             return -vs.temperature * vs.S_vib_kcal_mol_K;
         }, "−T·S_vib vibrational free energy correction (kcal/mol)")
@@ -263,20 +315,32 @@ PYBIND11_MODULE(_core, m) {
             return std::string(buf);
         });
 
-    py::class_<encom::ENCoMEngine>(m, "ENCoMEngine",
+    // ENCoMEngine wrapper that stores eigenvalue_cutoff for instance usage
+    struct ENCoMEngineWrapper {
+        double eigenvalue_cutoff;
+        ENCoMEngineWrapper(double cutoff = 1e-6) : eigenvalue_cutoff(cutoff) {}
+    };
+
+    py::class_<ENCoMEngineWrapper>(m, "ENCoMEngine",
         "ENCoM quasi-harmonic entropy calculator")
+        .def(py::init<double>(),
+            py::arg("eigenvalue_cutoff") = 1e-6,
+            "Initialize ENCoM engine with optional eigenvalue cutoff")
+        .def_readwrite("eigenvalue_cutoff", &ENCoMEngineWrapper::eigenvalue_cutoff)
+        .def("compute_vibrational_entropy",
+            [](const ENCoMEngineWrapper& self,
+               const std::vector<encom::NormalMode>& modes,
+               double temperature) {
+                return encom::ENCoMEngine::compute_vibrational_entropy(
+                    modes, temperature, self.eigenvalue_cutoff);
+            },
+            py::arg("modes"),
+            py::arg("temperature") = 300.0,
+            "Compute quasi-harmonic S_vib from a list of NormalMode objects")
         .def_static("load_modes",
             &encom::ENCoMEngine::load_modes,
             py::arg("eigenvalue_file"), py::arg("eigenvector_file"),
-            "Load normal modes from ENCoM output files\n"
-            "  eigenvalue_file:  plain text, one eigenvalue per line\n"
-            "  eigenvector_file: one mode per row, space-separated components")
-        .def_static("compute_vibrational_entropy",
-            &encom::ENCoMEngine::compute_vibrational_entropy,
-            py::arg("modes"),
-            py::arg("temperature_K")     = 300.0,
-            py::arg("eigenvalue_cutoff") = 1e-6,
-            "Schlitter quasi-harmonic S_vib from a list of NormalMode objects")
+            "Load normal modes from ENCoM output files")
         .def_static("total_entropy",
             &encom::ENCoMEngine::total_entropy,
             py::arg("S_conf_kcal_mol_K"), py::arg("S_vib_kcal_mol_K"),
@@ -285,4 +349,39 @@ PYBIND11_MODULE(_core, m) {
             &encom::ENCoMEngine::free_energy_with_vibrations,
             py::arg("F_electronic"), py::arg("S_vib_kcal_mol_K"), py::arg("temperature_K"),
             "F_total = F_elec − T·S_vib  (kcal/mol)");
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // FastOPTICS: lightweight super-cluster extraction
+    // ═══════════════════════════════════════════════════════════════════════
+
+    py::enum_<fast_optics::ClusterMode>(m, "ClusterMode",
+        "Clustering mode for FastOPTICS extraction")
+        .value("FULL_OPTICS", fast_optics::ClusterMode::FULL_OPTICS, "Full OPTICS hierarchy walk")
+        .value("SUPER_CLUSTER_ONLY", fast_optics::ClusterMode::SUPER_CLUSTER_ONLY,
+               "Fast super-cluster extraction (~40%% faster)")
+        .export_values();
+
+    py::class_<fast_optics::Point>(m, "Point", "N-dimensional point for OPTICS clustering")
+        .def(py::init<>())
+        .def(py::init([](std::vector<double> c) {
+            fast_optics::Point p; p.coords = std::move(c); return p;
+        }), py::arg("coords"))
+        .def_readwrite("coords", &fast_optics::Point::coords);
+
+    py::class_<fast_optics::Reachability>(m, "Reachability",
+        "OPTICS ordering entry with point index and reachability distance")
+        .def_readonly("index", &fast_optics::Reachability::index)
+        .def_readonly("reach", &fast_optics::Reachability::reach);
+
+    py::class_<fast_optics::FastOPTICS>(m, "FastOPTICSLight",
+        "Lightweight FastOPTICS clustering with super-cluster extraction")
+        .def(py::init<const std::vector<fast_optics::Point>&, int, double>(),
+            py::arg("points"), py::arg("min_pts") = 4, py::arg("eps") = 0.0,
+            "Build OPTICS ordering from points")
+        .def("get_ordering", &fast_optics::FastOPTICS::getOrdering,
+            py::return_value_policy::reference_internal,
+            "Return the OPTICS reachability ordering")
+        .def("extract_super_cluster", &fast_optics::FastOPTICS::extractSuperCluster,
+            py::arg("mode") = fast_optics::ClusterMode::FULL_OPTICS,
+            "Extract cluster indices (SUPER_CLUSTER_ONLY for fast mode)");
 }

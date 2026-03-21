@@ -16,11 +16,12 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Optional
 
+from .__version__ import __version__
 from .results import load_results
+from .__version__ import __version__
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,7 +29,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m flexaidds",
         description="Inspect FlexAID∆S docking result directories from Python.",
     )
-    parser.add_argument("results_dir", type=Path, help="Directory containing docking result PDB files")
+    parser.add_argument(
+        "-V", "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument("results_dir", nargs="?", type=Path, default=None,
+                        help="Directory containing docking result PDB files")
     parser.add_argument(
         "--json",
         action="store_true",
@@ -46,6 +53,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Show only the top N binding modes in the summary table (default: all).",
+    )
+    parser.add_argument(
+        "--check-update",
+        action="store_true",
+        help="Check for newer versions of FlexAID∆S on GitHub.",
+    )
+    parser.add_argument(
+        "--self-update",
+        action="store_true",
+        help="Check for and install the latest version via pip.",
     )
     return parser
 
@@ -85,17 +102,43 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
+    # Handle update flags first
+    if args.check_update or args.self_update:
+        from .updater import check_for_updates, update_pip
+
+        info = check_for_updates()
+        if info is None:
+            print("Could not reach GitHub API to check for updates.")
+            return 1
+
+        print(f"Current version: {info.current_version}")
+        print(f"Latest version:  {info.latest_version}")
+
+        if not info.update_available:
+            print("You are up to date.")
+            return 0
+
+        print(f"Update available: {info.release_url}")
+        if args.self_update:
+            print("Installing update via pip...")
+            version = info.latest_version.lstrip("v")
+            rc = update_pip(version)
+            if rc == 0:
+                print("Update installed successfully.")
+            else:
+                print(f"pip exited with code {rc}")
+            return rc
+
+        return 0
+
+    if args.results_dir is None:
+        parser.print_help()
+        return 0
+
     result = load_results(args.results_dir)
 
     if args.json:
-        payload = {
-            "source_dir": str(result.source_dir),
-            "temperature": result.temperature,
-            "n_modes": result.n_modes,
-            "metadata": result.metadata,
-            "binding_modes": result.to_records(),
-        }
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(result.to_json(sort_keys=True))
         return 0
 
     if args.csv is not None:
@@ -112,35 +155,14 @@ def main() -> int:
     if not result.binding_modes:
         return 0
 
-    # Table header
-    header = (
-        f"{'mode':>5}  {'rank':>4}  {'poses':>5}  "
-        f"{'best_cf':>10}  {'free_energy':>12}  "
-        f"{'enthalpy':>10}  {'entropy':>12}"
-    )
-    print(header)
-    print("-" * len(header))
-
-    # Sort by rank for display
     _print_table(result, args.top)
 
     top = result.top_mode()
-    for mode in sorted(result.binding_modes, key=lambda m: m.rank):
-        cf_str = f"{mode.best_cf:10.4f}" if mode.best_cf is not None else f"{'N/A':>10}"
-        fe_str = f"{mode.free_energy:12.4f}" if mode.free_energy is not None else f"{'N/A':>12}"
-        h_str = f"{mode.enthalpy:10.4f}" if mode.enthalpy is not None else f"{'N/A':>10}"
-        s_str = f"{mode.entropy:12.6f}" if mode.entropy is not None else f"{'N/A':>12}"
-        marker = " *" if top is not None and mode.mode_id == top.mode_id else ""
-        print(
-            f"{mode.mode_id:>5}  {mode.rank:>4}  {mode.n_poses:>5}  "
-            f"{cf_str}  {fe_str}  {h_str}  {s_str}{marker}"
-            f"\nTop mode: mode_id={top.mode_id}, rank={top.rank}, "
-            f"n_poses={top.n_poses}, free_energy={top.free_energy}, "
-            f"best_cf={top.best_cf}"
-        )
-
     if top is not None:
-        print(f"\n* = top-ranked mode (mode_id={top.mode_id})")
+        print(
+            f"\nTop mode: mode_id={top.mode_id}, "
+            f"free_energy={top.free_energy}, best_cf={top.best_cf}"
+        )
 
     return 0
 
