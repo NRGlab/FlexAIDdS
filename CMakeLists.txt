@@ -1224,6 +1224,7 @@ if(BUILD_TESTING)
     else()
         target_compile_options(test_fast_optics PRIVATE -O2)
     endif()
+    flexaids_configure_msvc_test(test_fast_optics)
     add_test(NAME FastOPTICSTests COMMAND test_fast_optics)
 
     message(STATUS "Unit tests enabled — build targets: test_statmech, test_hardware_dispatch, test_hardware_detect_dispatch, test_tencom_diff, test_ptm_attachment, test_gaboom, test_vcontacts, test_cleft_cavity, test_encom, test_ring_conformer_library, test_sugar_pucker, test_chiral_center, test_cavity_detect, test_binding_mode_statmech, test_binding_mode_advanced, test_ga_core, test_ga_validation, test_fast_optics")
