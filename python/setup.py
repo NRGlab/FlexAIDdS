@@ -30,7 +30,7 @@ _core_sources = [
     "flexaidds/_core.cpp",
     f"{_rel_lib}/statmech.cpp",
     f"{_rel_lib}/encom.cpp",
-    f"{_rel_lib}/tencm.cpp",
+    f"{_rel_lib}/tENCoM/tencm.cpp",
     f"{_rel_lib}/ShannonThermoStack/ShannonThermoStack.cpp",
 ]
 _core_defs = []

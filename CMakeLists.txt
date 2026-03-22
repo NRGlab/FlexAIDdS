@@ -412,7 +412,7 @@ if(BUILD_PYTHON_BINDINGS AND pybind11_FOUND)
         LIB/hardware_detect.cpp
         LIB/encom.cpp
         LIB/ShannonThermoStack/ShannonThermoStack.cpp
-        LIB/tencm.cpp
+        LIB/tENCoM/tencm.cpp
         LIB/fast_optics.cpp
         # BindingMode requires full GA infrastructure
         # Partial exposure for now (thermodynamics only)
@@ -425,6 +425,7 @@ if(BUILD_PYTHON_BINDINGS AND pybind11_FOUND)
     target_include_directories(_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB/ShannonThermoStack
+        ${CMAKE_CURRENT_SOURCE_DIR}/LIB/tENCoM
     )
     target_compile_definitions(_core PRIVATE VERSION_INFO=${PROJECT_VERSION})
     if(MSVC)
