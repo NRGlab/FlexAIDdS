@@ -6,10 +6,11 @@
 #include "Mol2Reader.h"
 #include "SdfReader.h"
 #include "CleftDetector.h"
+#include "statmech.h"
 
 #include <cstring>
 #include <string>
-#include <cstring>
+#include <vector>
 
 static void print_usage(const char* progname) {
 	printf("FlexAIDdS — Entropy-driven molecular docking\n\n");
@@ -155,6 +156,9 @@ int main(int argc, char **argv){
 	FA->acsweight = 1.0;
 
 	GB->outgen=0;
+	GB->entropy_weight=0.5;
+	GB->entropy_interval=0;
+	GB->use_shannon=0;
 	FA->num_grd=0;
 	FA->exclude_het=0;
 	FA->remove_water=1;
@@ -764,10 +768,28 @@ int main(int argc, char **argv){
 			////////////////////////////////
       
 			/******************************************************************/
-      
+
+			// ── Post-GA ensemble thermodynamic summary ──
+			if (FA->temperature > 0 && n_chrom_snapshot > 0) {
+				statmech::StatMechEngine post_engine(static_cast<double>(FA->temperature));
+				for (int si = 0; si < n_chrom_snapshot; si++) {
+					post_engine.add_sample(chrom_snapshot[si].evalue);
+				}
+				auto post_thermo = post_engine.compute();
+				printf("\n======= Post-GA Ensemble Thermodynamics (T=%uK) =======\n", FA->temperature);
+				printf("  Free energy F  = %10.4f kcal/mol\n", post_thermo.free_energy);
+				printf("  Mean energy <E>= %10.4f kcal/mol\n", post_thermo.mean_energy);
+				printf("  Entropy S      = %10.6f kcal/(mol*K)\n", post_thermo.entropy);
+				printf("  -TS            = %10.4f kcal/mol\n", -static_cast<double>(FA->temperature) * post_thermo.entropy);
+				printf("  Heat capacity  = %10.4f\n", post_thermo.heat_capacity);
+				printf("  Std energy     = %10.4f kcal/mol\n", post_thermo.std_energy);
+				printf("  Ensemble size  = %d\n", n_chrom_snapshot);
+				printf("========================================================\n\n");
+			}
+
 			printf("clustering all individuals in GA...");
 			fflush(stdout);
-            
+
 			printf("n_chrom_snapshot=%d\n", n_chrom_snapshot);
 
 			if( strcmp(FA->clustering_algorithm,"FO") == 0 )
