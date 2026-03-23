@@ -78,6 +78,15 @@ int main(int argc, char **argv){
 	memset(GB,0,sizeof(GB_Global));
 	memset(VC,0,sizeof(VC_Global));
 
+	// MIF/RefLig/GridPrio non-zero defaults (pointers already NULL from memset)
+	FA->mif_temperature = 300.0f;
+	FA->grid_prio_percent = 100.0f;
+	FA->reflig_seed_fraction = 0.25f;
+	FA->reflig_k_nearest = 10;
+	FA->reflig_hetatm_fallback = 1;
+	FA->autoflex_enabled = 1;  // auto-flex key binding residues by default
+	FA->autoflex_max = 5;
+
 	FA->contacts = (int*)malloc(MAX_ATOM_NUMBER*sizeof(int));
 	if(FA->contacts == NULL){
 		fprintf(stderr,"ERROR: Could not allocate memory for contacts\n");
@@ -1004,9 +1013,13 @@ int main(int argc, char **argv){
 
 	if(GB != NULL) { free(GB); }
 
-	if(FA != NULL) { 
+	if(FA != NULL) {
 		free(FA->contacts);
-		free(FA); 
+		free(FA->mif_energies);
+		free(FA->mif_sorted);
+		free(FA->mif_cdf);
+		free(FA->reflig_nearest_grid);
+		free(FA);
 	}
 
 

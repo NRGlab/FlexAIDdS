@@ -2,6 +2,87 @@
 #include "fileio.h"
 #include "CavityDetect/CavityDetect.h"
 #include "CleftDetector.h"
+#include "MIFGrid.h"
+#include "RefLigSeed.h"
+#include "CavityDetect/SpatialGrid.h"
+#include "BindingResidues.h"
+#include <vector>
+#include <algorithm>
+
+/*****************************************************************************
+ * compute_mif_and_reflig — MIF computation, grid prioritization, RefLig seeding
+ * Called after generate_grid() + calc_cleftic() for all detection modes.
+ *****************************************************************************/
+static void compute_mif_and_reflig(FA_Global* FA, atom* atoms,
+                                    gridpoint** cleftgrid, const char* lig_file) {
+	const bool need_mif = FA->mif_enabled || FA->grid_prio_percent < 100.0f;
+	const bool need_reflig = FA->reflig_file[0] != '\0';
+	const bool need_hetatm = !need_reflig && FA->reflig_hetatm_fallback && lig_file[0] != '\0';
+
+	if (!need_mif && !need_reflig && !need_hetatm) return;
+
+	// Build SpatialGrid for neighbor queries
+	std::vector<atom> protein_atoms(atoms, atoms + FA->atm_cnt_real);
+	cavity_detect::SpatialGrid sg;
+	sg.build(protein_atoms);
+
+	// ── MIF computation ──
+	if (need_mif) {
+		auto mif = mif::compute_mif(*cleftgrid, FA->num_grd,
+		                             atoms, FA->atm_cnt_real, sg);
+		free(FA->mif_energies); free(FA->mif_sorted); free(FA->mif_cdf);
+		FA->mif_count = static_cast<int>(mif.sorted_indices.size());
+		FA->mif_energies = static_cast<float*>(
+		    malloc(mif.energies.size() * sizeof(float)));
+		FA->mif_sorted = static_cast<int*>(
+		    malloc(mif.sorted_indices.size() * sizeof(int)));
+		std::copy_n(mif.energies.data(), mif.energies.size(), FA->mif_energies);
+		std::copy_n(mif.sorted_indices.data(), mif.sorted_indices.size(), FA->mif_sorted);
+
+		mif::build_sampling_cdf(mif, FA->mif_temperature);
+		FA->mif_cdf = static_cast<double*>(
+		    malloc(mif.cdf.size() * sizeof(double)));
+		std::copy_n(mif.cdf.data(), mif.cdf.size(), FA->mif_cdf);
+
+		// Grid prioritization: filter to top-K%
+		if (FA->grid_prio_percent < 100.0f) {
+			auto kept = mif::prioritize_grid(mif, FA->grid_prio_percent);
+			gridpoint* new_grid = nullptr;
+			int new_count = mif::rebuild_cleftgrid(
+			    *cleftgrid, FA->num_grd, kept, &new_grid);
+			if (new_grid && new_count > 0) {
+				int old_count = FA->num_grd;
+				free(*cleftgrid);
+				*cleftgrid = new_grid;
+				FA->num_grd = new_count;
+				calc_cleftic(FA, *cleftgrid);
+				printf("GRIDPRIO: kept %d/%d grid points (top %.0f%%)\n",
+				       new_count - 1, old_count - 1, FA->grid_prio_percent);
+			}
+		}
+
+		printf("MIF: computed for %d grid points (T=%.0fK)\n",
+		       FA->mif_count, FA->mif_temperature);
+	}
+
+	// ── RefLig seeding (explicit file OR HETATM fallback) ──
+	const char* reflig_path = need_reflig ? FA->reflig_file :
+	                          need_hetatm ? lig_file : nullptr;
+	if (reflig_path) {
+		auto data = reflig::prepare_reflig_seed(
+		    reflig_path, *cleftgrid, FA->num_grd, FA->reflig_k_nearest);
+		free(FA->reflig_nearest_grid);
+		FA->reflig_nearest_count = static_cast<int>(data.nearest_grid.size());
+		FA->reflig_nearest_grid = static_cast<int*>(
+		    malloc(data.nearest_grid.size() * sizeof(int)));
+		std::copy_n(data.nearest_grid.data(), data.nearest_grid.size(),
+		            FA->reflig_nearest_grid);
+
+		printf("REFLIG: seeded from %s — centroid (%.1f, %.1f, %.1f), %d nearest points\n",
+		       reflig_path, data.centroid[0], data.centroid[1], data.centroid[2],
+		       FA->reflig_nearest_count);
+	}
+}
 
 /*****************************************************************************
  * SUBROUTINE read_input reads input file.
@@ -359,11 +440,20 @@ void read_input(FA_Global* FA,atom** atoms, resid** residue,rot** rotamer,gridpo
   
 	//////////////////////////////////////////////
 
-	if(nflexsc && FA->is_protein){
-		
-		read_flexscfile(FA,*residue,rotamer,flexscline,nflexsc,rotlib_file,rotobs_file);
+	if((nflexsc || FA->autoflex_enabled) && FA->is_protein){
 
-		
+		if(nflexsc){
+			read_flexscfile(FA,*residue,rotamer,flexscline,nflexsc,rotlib_file,rotobs_file);
+		}else{
+			// Auto-flex only: allocate rotamer array (read_flexscfile normally does this)
+			(*rotamer) = (rot*)malloc(FA->MIN_ROTAMER_LIBRARY_SIZE*sizeof(rot));
+			if(!(*rotamer)){
+				fprintf(stderr,"ERROR: memory allocation error for rotamer\n");
+				Terminate(2);
+			}
+			memset((*rotamer),0,FA->MIN_ROTAMER_LIBRARY_SIZE*sizeof(rot));
+		}
+
 		if (FA->rotobs) {
 
 			// use rotamers found in bound conformations (hap2db)
@@ -372,37 +462,37 @@ void read_input(FA_Global* FA,atom** atoms, resid** residue,rot** rotamer,gridpo
 			}else{
 				strcpy(rotobs_file,FA->dependencies_path);
 			}
-            
+
 #ifdef _WIN32
 			strcat(rotobs_file,"\\rotobs.lst");
 #else
 			strcat(rotobs_file,"/rotobs.lst");
 #endif
-            
+
 			printf("read rotamer observations <%s>\n",rotobs_file);
 			read_rotobs(FA,rotamer,rotobs_file);
 		}else{
-			
+
 			// use penultimate rotamer library instances
 			if(!strcmp(FA->dependencies_path,"")){
 				strcpy(rotlib_file,FA->base_path);
 			}else{
 				strcpy(rotlib_file,FA->dependencies_path);
 			}
-            
+
 #ifdef _WIN32
 			strcat(rotlib_file,"\\Lovell_LIB.dat");
 #else
 			strcat(rotlib_file,"/Lovell_LIB.dat");
 #endif
-            
+
 			printf("read rotamer library <%s>\n",rotlib_file);
 			read_rotlib(FA,rotamer,rotlib_file);
 		}
-    
+
 		if(FA->nflxsc > 0 && FA->rotlibsize > 0){
-			build_rotamers(FA,atoms,*residue,*rotamer); 
-			//build_close(FA,residue,atoms);         
+			build_rotamers(FA,atoms,*residue,*rotamer);
+			//build_close(FA,residue,atoms);
 		}
 	}
 
@@ -437,7 +527,8 @@ void read_input(FA_Global* FA,atom** atoms, resid** residue,rot** rotamer,gridpo
 		
 		(*cleftgrid) = generate_grid(FA,spheres,(*atoms),(*residue));
 		calc_cleftic(FA,*cleftgrid);
-        
+		compute_mif_and_reflig(FA, *atoms, cleftgrid, lig_file);
+
 	}else if(!strcmp(rngopt,"LOCCLF")){
 
 		//RNGOPT LOCCLF filename.pdb
@@ -449,6 +540,7 @@ void read_input(FA_Global* FA,atom** atoms, resid** residue,rot** rotamer,gridpo
 
 		(*cleftgrid) = generate_grid(FA,spheres,(*atoms),(*residue));
 		calc_cleftic(FA,*cleftgrid);
+		compute_mif_and_reflig(FA, *atoms, cleftgrid, lig_file);
 
 	}else if(!strcmp(rngopt,"LOCCDT")){
 
@@ -495,6 +587,11 @@ void read_input(FA_Global* FA,atom** atoms, resid** residue,rot** rotamer,gridpo
 			Terminate(2);
 		}
 
+		// Generate grid from detected cavity spheres (was missing)
+		(*cleftgrid) = generate_grid(FA, spheres, (*atoms), (*residue));
+		calc_cleftic(FA, *cleftgrid);
+		compute_mif_and_reflig(FA, *atoms, cleftgrid, lig_file);
+
 	}else if(!strncmp(rngopt,"AUTO  ",4)){
 
 		// RNGOPT AUTO — automatic cleft detection (SURFNET gap-sphere)
@@ -519,6 +616,7 @@ void read_input(FA_Global* FA,atom** atoms, resid** residue,rot** rotamer,gridpo
 
 		(*cleftgrid) = generate_grid(FA,spheres,(*atoms),(*residue));
 		calc_cleftic(FA,*cleftgrid);
+		compute_mif_and_reflig(FA, *atoms, cleftgrid, lig_file);
 	}
     
 	//printf("IC bounds...\n");
@@ -544,6 +642,39 @@ void read_input(FA_Global* FA,atom** atoms, resid** residue,rot** rotamer,gridpo
 		//printf("Add2 optimiz vector...\n");
 		add2_optimiz_vec(FA,*atoms,*residue,opt,chain,"");
 
+	}
+
+	// ── Auto-flex: add key binding residues as flexible side-chains ──
+	if (FA->autoflex_enabled && FA->mif_energies && FA->mif_count > 0) {
+		int nflxsc_before = FA->nflxsc;
+		int n_added = binding_residues::add_key_residues_as_flexible(
+			FA, *cleftgrid, *atoms, *residue, FA->autoflex_max);
+
+		// Build rotamers for newly added flexible residues only
+		if (n_added > 0 && FA->rotlibsize > 0) {
+			int saved_nflxsc = FA->nflxsc;
+			int saved_nflxsc_real = FA->nflxsc_real;
+			flxsc* saved_flex_res = FA->flex_res;
+
+			// Point flex_res to only the new entries so build_rotamers
+			// processes only the auto-flexed residues
+			FA->flex_res = &saved_flex_res[nflxsc_before];
+			FA->nflxsc = n_added;
+
+			build_rotamers(FA, atoms, *residue, *rotamer);
+
+			// Accumulate nflxsc_real from both batches
+			int new_nflxsc_real = FA->nflxsc_real;
+
+			// Restore full flex_res array
+			FA->flex_res = saved_flex_res;
+			FA->nflxsc = saved_nflxsc;
+			FA->nflxsc_real = saved_nflxsc_real + new_nflxsc_real;
+
+			printf("AUTOFLEX: built rotamers for %d auto-flexed residues "
+			       "(%d with rotamers, total flexible: %d)\n",
+			       n_added, new_nflxsc_real, FA->nflxsc);
+		}
 	}
 
 	add2_optimiz_vec(FA,*atoms,*residue,opt,chain,"SC");
