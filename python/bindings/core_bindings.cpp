@@ -232,6 +232,10 @@ PYBIND11_MODULE(_core, m) {
             "StatMechEngine aggregating all poses across all binding modes")
         .def("get_super_cluster_ensemble", &BindingPopulation::get_super_cluster_ensemble,
             "StatMechEngine with super-cluster filtered poses (dominant energy basin only)")
+        .def("get_shannon_entropy", &BindingPopulation::get_shannon_entropy,
+            "Population-level Shannon configurational entropy S = -kB * sum(p_i * ln(p_i)) (kcal/mol/K)")
+        .def("get_deltaG_matrix", &BindingPopulation::get_deltaG_matrix,
+            "Full ΔG matrix between all pairs of binding modes (kcal/mol); matrix[i][j] = F_i - F_j")
         .def("__len__", &BindingPopulation::get_Population_size)
         .def("__repr__", [](const BindingPopulation& p) {
             return "<BindingPopulation n_modes=" +

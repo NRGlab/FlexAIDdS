@@ -146,6 +146,12 @@ class BindingPopulation
 		 	// ═══ PUBLIC ACCESSORS (for bindings) ═══
 		 	const std::vector<BindingMode>& get_binding_modes() const { return BindingModes; }
 
+		 	// ═══ POPULATION-LEVEL SHANNON ENTROPY ═══
+		 	/// Shannon configurational entropy across all binding modes: S = -kB * sum(p_i * ln(p_i))
+		 	double	get_shannon_entropy() const;
+		 	/// ΔG matrix between all pairs of binding modes (upper triangle, row-major)
+		 	std::vector<std::vector<double>> get_deltaG_matrix() const;
+
 	protected:
 		double PartitionFunction;	// sum of all Boltzmann_weight (DEPRECATED: use StatMechEngine)
 		int nChroms;	 			// n_chrom_snapshot input to clustergin function
