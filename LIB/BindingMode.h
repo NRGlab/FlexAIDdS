@@ -124,7 +124,7 @@ class BindingPopulation
 		 	void	add_BindingMode(BindingMode&);
 		 	// return the number of BindinMonde (size getter)
 		 	int	 	get_Population_size();
-		 	// access individual binding mode by index (bounds-checked)
+		 	// access individual BindingMode by index (bounds-checked)
 		 	const BindingMode&	get_binding_mode(int index) const;
 		 	BindingMode&		get_binding_mode(int index);
 		 	// output BindingMode up to nResults results
