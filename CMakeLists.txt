@@ -1242,7 +1242,6 @@ if(BUILD_TESTING)
         add_test(NAME SoftContactMatrixTests COMMAND test_soft_contact_matrix)
     endif()
 
-<<<<<<< HEAD
     # test_ion_handling — assign_radii / assign_types HETATM + ion coverage
     #                     + tENCoM ion contact surface (TmContSct) tests
     add_executable(test_ion_handling
