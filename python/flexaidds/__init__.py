@@ -147,64 +147,6 @@ def dock(
 
     docking = Docking(str(cfg_path))
     return docking.run(binary=binary, timeout=timeout)
-__all__ = [
-    # High-level API
-    "dock",
-    "Docking",
-    "BindingMode",
-    "BindingPopulation",
-    "Pose",
-    # Result I/O (always available)
-    "PoseResult",
-    "BindingModeResult",
-    "DockingResult",
-    "load_results",
-    # Thermodynamics (always available — pure Python or C++)
-    "StatMechEngine",
-    "Thermodynamics",
-    # ENCoM (always available — pure Python or C++)
-    "ENCoMEngine",
-    "NormalMode",
-    "VibrationalEntropy",
-    # tENCoM results (always available, pure Python)
-    "FlexModeResult",
-    "FlexPopulationResult",
-    "parse_tencom_pdb",
-    "parse_tencom_json",
-    # TorsionalENM / ShannonThermoStack (always available — pure Python or C++)
-    "TorsionalENM",
-    "TorsionalNormalMode",
-    "Conformer",
-    "FullThermoResult",
-    "compute_shannon_entropy",
-    "compute_torsional_vibrational_entropy",
-    "run_shannon_thermo_stack",
-    # Super-cluster extraction
-    "SuperCluster",
-    # Physical constants
-    "kB_kcal",
-    "kB_SI",
-    # Updater
-    "check_for_updates",
-    "UpdateInfo",
-    # Boltz-2 NIM client
-    "Boltz2Client",
-    "Boltz2PredictionResult",
-    "Boltz2AffinityResult",
-    "Boltz2Polymer",
-    "Boltz2Ligand",
-    "PocketConstraint",
-    "PocketContact",
-    "Boltz2Error",
-    # Benchmark
-    "BenchmarkSystem",
-    "MethodResult",
-    "SystemBenchmarkResult",
-    "BenchmarkResult",
-    "BenchmarkSummary",
-    "run_benchmark",
-    "load_benchmark_dataset",
-    "save_benchmark_dataset",
     # Availability flag
     "HAS_CORE_BINDINGS",
     # Core types (C++ when available, pure-Python fallback otherwise)
