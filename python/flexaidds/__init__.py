@@ -147,7 +147,6 @@ def dock(
 
     docking = Docking(str(cfg_path))
     return docking.run(binary=binary, timeout=timeout)
-
 __all__ = [
     # High-level API
     "dock",
@@ -209,16 +208,11 @@ __all__ = [
     # Availability flag
     "HAS_CORE_BINDINGS",
     # Core types (C++ when available, pure-Python fallback otherwise)
-    "StatMechEngine",
-    "Thermodynamics",
     "State",
     "BoltzmannLUT",
     "Replica",
     "WHAMBin",
     "TIPoint",
-    "ENCoMEngine",
-    "NormalMode",
-    "VibrationalEntropy",
     # Energy matrix I/O and 256-type encoding (always available — pure Python)
     "EnergyMatrix",
     "MatrixEntry",
