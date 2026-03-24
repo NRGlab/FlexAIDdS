@@ -37,11 +37,23 @@
 #define MAX_SHORTEST_PATH 25        // max number of atom to reach any atom of the same molecule
 #define MAX_PATH__ 255              // max size of path length
 #define MAX_REMARK 5000             // max size of comment length
+
+// Safe remark buffer append: prevents buffer overflow in remark accumulation.
+// Usage: safe_remark_cat(remark, tmpremark, &remark_len);
+static inline void safe_remark_cat(char* remark, const char* src, size_t* cur_len) {
+    size_t src_len = strlen(src);
+    size_t avail = (MAX_REMARK - 1) > *cur_len ? (MAX_REMARK - 1) - *cur_len : 0;
+    if (src_len > 0 && src_len <= avail) {
+        memcpy(remark + *cur_len, src, src_len + 1);
+        *cur_len += src_len;
+    }
+}
 #define MAX_NUM_RES 250             // max number of residues allowed 
 #define MAX_NUM_MODES 5             // max number of normal modes
 #define MAX_NUM_ATM 10000           // max number of atoms allowed 
 #define MAX_ATM_HET 200             // max number of atoms in het groups allowed 
 //#define MAX_FLEX_BONDS 20           // max number of flexible bonds for het groups
+#define MAX_ATOM_NUMBER 100000      // Max PDB atom number for contacts/num_atm arrays
 #define MAX_GRID_POINTS 1000        // Total number of points to anchor ligand
 #define MAX_NORMAL_GRID 5000        // max number of grid points in normal grid
 #define MAX_SPHERE_POINTS 610       // Total number of points in atom surface sphere 
@@ -338,6 +350,7 @@ struct FA_Global_struct{
 	float maxdst;                        // max distance from a protein atom to PCG 
 	float cluster_rmsd;                  // rmsd between poses when clustering
 	char  clustering_algorithm[3];
+	bool  use_super_cluster;             // use SUPER_CLUSTER_ONLY mode for faster clustering
 	uint temperature;					 // temperature parameter 
 	double beta;						 // Metropolis ß parament == 1/T *may be worth trying 1/kT*
 	float permeability;                  // allow permeability or not between atoms
@@ -361,6 +374,9 @@ struct FA_Global_struct{
 	int   res_cnt;                       // total number of residues
 	int   exclude_het;                   // exclude HET groups when calculating CF
 	int   remove_water;                  // exclude water molecules (HET=HOH)
+	int   keep_ions;                     // retain metal ions even when exclude_het=1
+	int   keep_structural_waters;        // retain low-B-factor crystallographic waters
+	float structural_water_bfactor_max;  // B-factor cutoff for structural waters (Å²)
 	int   output_range;                  // outputs Sphere or Grid file(s)
 
 	int     bloops;                      // exclude interactions with atoms n bloops away (exclude dis-ang preferably)
@@ -486,6 +502,27 @@ struct FA_Global_struct{
 	int    MIN_FLEX_RESIDUE;
 	int    MIN_NORMAL_GRID_POINTS;
 	int    MIN_CONSTRAINTS;
+
+	// ── MIF + Grid Prioritization ──
+	float*  mif_energies;          // parallel array [num_grd], MIF energy per grid point
+	int*    mif_sorted;            // grid indices sorted by energy (ascending)
+	double* mif_cdf;               // Boltzmann CDF for sampling
+	int     mif_count;             // entries in sorted/cdf (= num_grd - 1)
+	int     mif_enabled;           // 1 if MIF-weighted init is active
+	float   mif_temperature;       // Boltzmann temperature (default 300K)
+	float   grid_prio_percent;     // top-K% to keep (default 100 = no filtering)
+
+	// ── Reference Ligand Seeding ──
+	char    reflig_file[MAX_PATH__]; // path to reference ligand PDB/MOL2
+	float   reflig_seed_fraction;    // fraction of population to seed (default 0.25)
+	int     reflig_k_nearest;        // K nearest grid points (default 10)
+	int*    reflig_nearest_grid;     // K nearest grid point indices (1-based)
+	int     reflig_nearest_count;    // actual count found
+	int     reflig_hetatm_fallback;  // 1 = use INPLIG HETATM as fallback (default 1)
+
+	// ── Auto-Flex Binding Residues ──
+	int     autoflex_enabled;        // 1 = auto-flex key binding residues (default 1)
+	int     autoflex_max;            // max residues to auto-flex (default 5)
 };
 typedef struct FA_Global_struct FA_Global;
 
@@ -594,7 +631,9 @@ double get_cf_evalue(cfstr* cf);
 
 double GetValueFromGaussian(double x,double max,double zero);
 
-void modify_pdb(char* infile, char* outfile, int exclude_het, int remove_water, int is_protein); // reorder protein atoms in PDB file
+void modify_pdb(char* infile, char* outfile, int exclude_het, int remove_water, int is_protein,
+                int keep_ions=1, int keep_structural_waters=1,
+                float structural_water_bfactor_max=20.0f); // reorder protein atoms in PDB file
 int rna_structure(char* infile);
 int get_NextLine(char lines[][100], int nlines);
 int is_rna_structure(char* infile);

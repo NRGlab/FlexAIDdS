@@ -1,4 +1,5 @@
 #include "BindingMode.h"
+#include "fast_optics.hpp"
 
 #include <algorithm>
 #include <cfloat>
@@ -23,7 +24,9 @@ BindingPopulation::BindingPopulation(FA_Global* pFA, GB_Global* pGB, VC_Global* 
 	  gene_lim(pgene_lim),
 	  atoms(patoms),
 	  residue(presidue),
-	  cleftgrid(pcleftgrid)
+	  cleftgrid(pcleftgrid),
+	  shannonS_population_(0.0),
+	  shannon_cache_valid_(false)
 {
 }
 
@@ -36,6 +39,7 @@ void BindingPopulation::add_BindingMode(BindingMode& mode)
 	}
 	mode.set_energy();
 	this->BindingModes.push_back(mode);
+	this->shannon_cache_valid_ = false;  // Invalidate Shannon cache
 	this->Entropize();
 }
 
@@ -51,6 +55,37 @@ void BindingPopulation::Entropize()
 
 
 int BindingPopulation::get_Population_size() { return this->BindingModes.size(); }
+
+const BindingMode& BindingPopulation::get_binding_mode(int index) const { return this->BindingModes.at(index); }
+BindingMode& BindingPopulation::get_binding_mode(int index) { return this->BindingModes.at(index); }
+
+
+const BindingMode& BindingPopulation::get_binding_mode(int index) const
+{
+	if (index < 0 || index >= static_cast<int>(this->BindingModes.size()))
+	{
+		throw std::out_of_range(
+			"BindingPopulation::get_binding_mode: index " +
+			std::to_string(index) + " out of range [0, " +
+			std::to_string(this->BindingModes.size()) + ")"
+		);
+	}
+	return this->BindingModes[index];
+}
+
+
+BindingMode& BindingPopulation::get_binding_mode(int index)
+{
+	if (index < 0 || index >= static_cast<int>(this->BindingModes.size()))
+	{
+		throw std::out_of_range(
+			"BindingPopulation::get_binding_mode: index " +
+			std::to_string(index) + " out of range [0, " +
+			std::to_string(this->BindingModes.size()) + ")"
+		);
+	}
+	return this->BindingModes[index];
+}
 
 
 // output BindingMode up to nResults results
@@ -80,23 +115,170 @@ statmech::StatMechEngine BindingPopulation::get_global_ensemble() const
 {
 	statmech::StatMechEngine global_engine(static_cast<double>(this->Temperature));
 
+	// Phase 1: count total samples for pre-allocation
+	std::size_t total_poses = 0;
+	for (const auto& mode : this->BindingModes)
+		total_poses += mode.Poses.size();
+
+	// Phase 2: collect energy/weight pairs
+	// Pre-collect to enable potential future parallelisation without
+	// thread-safety issues on add_sample().
+	std::vector<double> all_energies;
+	std::vector<double> all_weights;
+	all_energies.reserve(total_poses);
+	all_weights.reserve(total_poses);
+
 	for (const auto& mode : this->BindingModes)
 	{
 		const std::vector<double> weights = mode.get_boltzmann_weights();
 		const std::vector<Pose>& poses = mode.Poses;
 
 		if (weights.size() != poses.size())
-		{
 			continue;
-		}
 
 		for (std::size_t i = 0; i < poses.size(); ++i)
 		{
-			global_engine.add_sample(poses[i].CF, weights[i]);
+			all_energies.push_back(poses[i].CF);
+			all_weights.push_back(weights[i]);
 		}
 	}
 
+	// Phase 3: batch add to engine (sequential, but faster due to contiguous access)
+	for (std::size_t i = 0; i < all_energies.size(); ++i)
+		global_engine.add_sample(all_energies[i], all_weights[i]);
+
 	return global_engine;
+}
+
+
+statmech::StatMechEngine BindingPopulation::get_super_cluster_ensemble() const
+{
+	// Collect all pose energies across all binding modes
+	std::vector<double> all_energies;
+	for (const auto& mode : this->BindingModes)
+		for (const auto& pose : mode.Poses)
+			all_energies.push_back(pose.CF);
+
+	if (all_energies.size() <= 4)
+		return get_global_ensemble();  // too few poses for meaningful filtering
+
+	// Build 1D energy points for lightweight FastOPTICS
+	std::vector<fast_optics::Point> energy_pts(all_energies.size());
+	for (size_t i = 0; i < all_energies.size(); ++i)
+		energy_pts[i].coords = { all_energies[i] };
+
+	fast_optics::FastOPTICS sc_optics(energy_pts,
+		std::max(4, static_cast<int>(all_energies.size()) / 20));
+	auto sc_indices = sc_optics.extractSuperCluster(
+		fast_optics::ClusterMode::SUPER_CLUSTER_ONLY);
+
+	if (sc_indices.empty())
+		return get_global_ensemble();  // fallback if extraction yields nothing
+
+	statmech::StatMechEngine sc_engine(static_cast<double>(this->Temperature));
+	for (size_t idx : sc_indices)
+		sc_engine.add_sample(all_energies[idx], 1.0);
+
+	return sc_engine;
+}
+
+
+double BindingPopulation::get_shannon_entropy() const
+{
+	if (shannon_cache_valid_)
+		return shannonS_population_;
+
+	if (BindingModes.empty())
+/// === Population-level Shannon entropy ===
+double BindingPopulation::get_shannon_entropy() const
+{
+	if (shannon_cache_valid_)
+	{
+		return shannonS_population_;
+	}
+
+	// Collect all pose energies across all binding modes
+	std::vector<double> all_energies;
+	for (const auto& mode : this->BindingModes)
+	{
+		for (const auto& pose : mode.Poses)
+		{
+			all_energies.push_back(pose.CF);
+		}
+	}
+
+	if (all_energies.empty())
+	{
+		shannonS_population_ = 0.0;
+		shannon_cache_valid_ = true;
+		return 0.0;
+	}
+
+	// Collect free energies per mode and compute Boltzmann weights
+	const double beta = 1.0 / (statmech::kB_kcal * static_cast<double>(Temperature));
+	std::vector<double> log_weights;
+	log_weights.reserve(BindingModes.size());
+	for (const auto& mode : BindingModes)
+		log_weights.push_back(-beta * mode.get_free_energy());
+
+	// Log-sum-exp for numerical stability
+	double log_Z = log_weights[0];
+	for (std::size_t i = 1; i < log_weights.size(); ++i)
+		log_Z = std::max(log_Z, log_weights[i]) +
+		        std::log1p(std::exp(std::min(log_weights[i], log_weights[0]) -
+		                            std::max(log_weights[i], log_weights[0])));
+
+	// Recompute properly with log-sum-exp
+	double lse = *std::max_element(log_weights.begin(), log_weights.end());
+	double sum_exp = 0.0;
+	for (double lw : log_weights)
+		sum_exp += std::exp(lw - lse);
+	double log_sum = lse + std::log(sum_exp);
+
+	double S = 0.0;
+	for (double lw : log_weights)
+	{
+		double p = std::exp(lw - log_sum);
+		if (p > 0.0)
+			S -= p * std::log(p);
+	}
+	// Convert to kcal/mol/K units (multiply by kB)
+	shannonS_population_ = statmech::kB_kcal * S;
+	// Compute Shannon entropy via ShannonThermoStack (energy histogram binning)
+	double shannon_bits = shannon_thermo::compute_shannon_entropy(all_energies);
+
+	// Convert from dimensionless bits to thermodynamic units: S = kB * H
+	shannonS_population_ = statmech::kB_kcal * shannon_bits;
+	shannon_cache_valid_ = true;
+	return shannonS_population_;
+}
+
+
+std::vector<std::vector<double>> BindingPopulation::get_deltaG_matrix() const
+{
+	const std::size_t n = BindingModes.size();
+	std::vector<std::vector<double>> matrix(n, std::vector<double>(n, 0.0));
+	for (std::size_t i = 0; i < n; ++i)
+		for (std::size_t j = 0; j < n; ++j)
+			if (i != j)
+				matrix[i][j] = compute_delta_G(BindingModes[i], BindingModes[j]);
+/// === ΔG matrix between all pairs of binding modes ===
+std::vector<std::vector<double>> BindingPopulation::get_deltaG_matrix() const
+{
+	int n = static_cast<int>(this->BindingModes.size());
+	std::vector<std::vector<double>> matrix(n, std::vector<double>(n, 0.0));
+
+	for (int i = 0; i < n; ++i)
+	{
+		for (int j = i + 1; j < n; ++j)
+		{
+			double dg = compute_delta_G(this->BindingModes[i], this->BindingModes[j]);
+			matrix[i][j] = dg;
+			matrix[j][i] = -dg;
+		}
+	}
+
+	return matrix;
 }
 
 
@@ -109,6 +291,8 @@ BindingMode::BindingMode(BindingPopulation* pop)
 	: Population(pop),
 	  engine_(pop ? static_cast<double>(pop->Temperature) : 298.15),
 	  thermo_cache_valid_(false),
+	  vib_correction_cache_(0.0),
+	  vib_cache_valid_(false),
 	  energy(0.0)
 {
 }
@@ -118,7 +302,8 @@ BindingMode::BindingMode(BindingPopulation* pop)
 void BindingMode::add_Pose(Pose& pose)
 {
 	this->Poses.push_back(pose);
-	this->thermo_cache_valid_ = false;  // Invalidate cache on modification
+	this->thermo_cache_valid_ = false;
+	this->vib_cache_valid_ = false;
 }
 
 
@@ -236,12 +421,29 @@ std::vector<statmech::WHAMBin> BindingMode::free_energy_profile(
 
 int BindingMode::get_BindingMode_size() const { return this->Poses.size(); }
 
+const Pose& BindingMode::get_pose(int index) const { return this->Poses.at(index); }
+
+
+const Pose& BindingMode::get_pose(int index) const
+{
+	if (index < 0 || index >= static_cast<int>(this->Poses.size()))
+	{
+		throw std::out_of_range(
+			"BindingMode::get_pose: index " +
+			std::to_string(index) + " out of range [0, " +
+			std::to_string(this->Poses.size()) + ")"
+		);
+	}
+	return this->Poses[index];
+}
+
 
 void BindingMode::clear_Poses()
 {
 	this->Poses.clear();
 	this->engine_.clear();
 	this->thermo_cache_valid_ = false;
+	this->vib_cache_valid_ = false;
 }
 
 
@@ -268,68 +470,69 @@ void BindingMode::output_BindingMode(int num_result, char* end_strfile, char* tm
 
 	CF = ic2cf(this->Population->FA, this->Population->VC, this->Population->atoms, this->Population->residue, this->Population->cleftgrid, this->Population->GB->num_genes, this->Population->FA->opt_par);
 
-	strcpy(remark, "REMARK optimized structure\n");
+	size_t remark_len = 0;
+	remark[0] = '\0';
+	safe_remark_cat(remark, "REMARK optimized structure\n", &remark_len);
 
-	sprintf(tmpremark, "REMARK Fast OPTICS clustering algorithm used to output the lowest CF as Binding Mode representative\n");
-	strcat(remark, tmpremark);
+	snprintf(tmpremark, MAX_REMARK, "REMARK Fast OPTICS clustering algorithm used to output the lowest CF as Binding Mode representative\n");
+	safe_remark_cat(remark, tmpremark, &remark_len);
 
-	sprintf(tmpremark, "REMARK CF=%8.5f\n", get_cf_evalue(&CF));
-	strcat(remark, tmpremark);
-	sprintf(tmpremark, "REMARK CF.app=%8.5f\n", get_apparent_cf_evalue(&CF));
-	strcat(remark, tmpremark);
+	snprintf(tmpremark, MAX_REMARK, "REMARK CF=%8.5f\n", get_cf_evalue(&CF));
+	safe_remark_cat(remark, tmpremark, &remark_len);
+	snprintf(tmpremark, MAX_REMARK, "REMARK CF.app=%8.5f\n", get_apparent_cf_evalue(&CF));
+	safe_remark_cat(remark, tmpremark, &remark_len);
 
 	for (int j = 0; j < this->Population->FA->num_optres; ++j)
 	{
 		pRes = &this->Population->residue[this->Population->FA->optres[j].rnum];
 		pCF = &this->Population->FA->optres[j].cf;
 
-		sprintf(tmpremark, "REMARK optimizable residue %s %c %d\n", pRes->name, pRes->chn, pRes->number);
-		strcat(remark, tmpremark);
+		snprintf(tmpremark, MAX_REMARK, "REMARK optimizable residue %s %c %d\n", pRes->name, pRes->chn, pRes->number);
+		safe_remark_cat(remark, tmpremark, &remark_len);
 
-		sprintf(tmpremark, "REMARK CF.com=%8.5f\n", pCF->com);
-		strcat(remark, tmpremark);
-		sprintf(tmpremark, "REMARK CF.sas=%8.5f\n", pCF->sas);
-		strcat(remark, tmpremark);
-		sprintf(tmpremark, "REMARK CF.wal=%8.5f\n", pCF->wal);
-		strcat(remark, tmpremark);
-		sprintf(tmpremark, "REMARK CF.con=%8.5f\n", pCF->con);
-		strcat(remark, tmpremark);
-		sprintf(tmpremark, "REMARK Residue has an overall SAS of %.3f\n", pCF->totsas);
-		strcat(remark, tmpremark);
+		snprintf(tmpremark, MAX_REMARK, "REMARK CF.com=%8.5f\n", pCF->com);
+		safe_remark_cat(remark, tmpremark, &remark_len);
+		snprintf(tmpremark, MAX_REMARK, "REMARK CF.sas=%8.5f\n", pCF->sas);
+		safe_remark_cat(remark, tmpremark, &remark_len);
+		snprintf(tmpremark, MAX_REMARK, "REMARK CF.wal=%8.5f\n", pCF->wal);
+		safe_remark_cat(remark, tmpremark, &remark_len);
+		snprintf(tmpremark, MAX_REMARK, "REMARK CF.con=%8.5f\n", pCF->con);
+		safe_remark_cat(remark, tmpremark, &remark_len);
+		snprintf(tmpremark, MAX_REMARK, "REMARK Residue has an overall SAS of %.3f\n", pCF->totsas);
+		safe_remark_cat(remark, tmpremark, &remark_len);
 	}
 
-	sprintf(tmpremark, "REMARK Binding Mode:%d Best CF in Binding Mode:%8.5f OPTICS Center (CF):%8.5f Binding Mode Total CF:%8.5f Binding Mode Frequency:%d\n",
+	snprintf(tmpremark, MAX_REMARK, "REMARK Binding Mode:%d Best CF in Binding Mode:%8.5f OPTICS Center (CF):%8.5f Binding Mode Total CF:%8.5f Binding Mode Frequency:%d\n",
 		num_result, Rep_lowCF->CF, Rep_lowOPTICS->CF, this->compute_energy(), this->get_BindingMode_size());
-	strcat(remark, tmpremark);
+	safe_remark_cat(remark, tmpremark, &remark_len);
 	{
 		double vib_corr = this->compute_vibrational_correction();
 		if (std::abs(vib_corr) > 1e-12) {
-			sprintf(tmpremark, "REMARK Vibrational correction (ENCoM): %10.4f kcal/mol\n", vib_corr);
-			strcat(remark, tmpremark);
+			snprintf(tmpremark, MAX_REMARK, "REMARK Vibrational correction (ENCoM): %10.4f kcal/mol\n", vib_corr);
+			safe_remark_cat(remark, tmpremark, &remark_len);
 		}
 	}
 	for (int j = 0; j < this->Population->FA->npar; ++j)
 	{
-		sprintf(tmpremark, "REMARK [%8.3f]\n", this->Population->FA->opt_par[j]);
-		strcat(remark, tmpremark);
+		snprintf(tmpremark, MAX_REMARK, "REMARK [%8.3f]\n", this->Population->FA->opt_par[j]);
+		safe_remark_cat(remark, tmpremark, &remark_len);
 	}
 
 	if (this->Population->FA->refstructure == 1)
 	{
 		bool Hungarian = false;
-		sprintf(tmpremark, "REMARK %8.5f RMSD to ref. structure (no symmetry correction)\n",
+		snprintf(tmpremark, MAX_REMARK, "REMARK %8.5f RMSD to ref. structure (no symmetry correction)\n",
 			calc_rmsd(this->Population->FA, this->Population->atoms, this->Population->residue, this->Population->cleftgrid, this->Population->FA->npar, this->Population->FA->opt_par, Hungarian));
-		strcat(remark, tmpremark);
+		safe_remark_cat(remark, tmpremark, &remark_len);
 		Hungarian = true;
-		sprintf(tmpremark, "REMARK %8.5f RMSD to ref. structure     (symmetry corrected)\n",
+		snprintf(tmpremark, MAX_REMARK, "REMARK %8.5f RMSD to ref. structure     (symmetry corrected)\n",
 			calc_rmsd(this->Population->FA, this->Population->atoms, this->Population->residue, this->Population->cleftgrid, this->Population->FA->npar, this->Population->FA->opt_par, Hungarian));
-		strcat(remark, tmpremark);
+		safe_remark_cat(remark, tmpremark, &remark_len);
 	}
-	sprintf(tmpremark, "REMARK inputs: %s & %s\n", dockinp, gainp);
-	strcat(remark, tmpremark);
-	sprintf(sufix, "_%d_%d.pdb", minPoints, num_result);
-	strcpy(tmp_end_strfile, end_strfile);
-	strcat(tmp_end_strfile, sufix);
+	snprintf(tmpremark, MAX_REMARK, "REMARK inputs: %s & %s\n", dockinp, gainp);
+	safe_remark_cat(remark, tmpremark, &remark_len);
+	snprintf(sufix, sizeof(sufix), "_%d_%d.pdb", minPoints, num_result);
+	snprintf(tmp_end_strfile, MAX_PATH__, "%s%s", end_strfile, sufix);
 	write_pdb(this->Population->FA, this->Population->atoms, this->Population->residue, tmp_end_strfile, remark);
 }
 
@@ -350,58 +553,59 @@ void BindingMode::output_dynamic_BindingMode(int num_result, char* end_strfile, 
 
 		CF = ic2cf(this->Population->FA, this->Population->VC, this->Population->atoms, this->Population->residue, this->Population->cleftgrid, this->Population->GB->num_genes, this->Population->FA->opt_par);
 
-		strcpy(remark, "REMARK optimized structure\n");
-		sprintf(tmpremark, "REMARK Fast OPTICS clustering algorithm used to output the lowest OPTICS ordering as Binding Mode representative\n");
-		strcat(remark, tmpremark);
+		size_t remark_len = 0;
+		remark[0] = '\0';
+		safe_remark_cat(remark, "REMARK optimized structure\n", &remark_len);
+		snprintf(tmpremark, MAX_REMARK, "REMARK Fast OPTICS clustering algorithm used to output the lowest OPTICS ordering as Binding Mode representative\n");
+		safe_remark_cat(remark, tmpremark, &remark_len);
 
-		sprintf(tmpremark, "REMARK CF=%8.5f\n", get_cf_evalue(&CF));
-		strcat(remark, tmpremark);
-		sprintf(tmpremark, "REMARK CF.app=%8.5f\n", get_apparent_cf_evalue(&CF));
-		strcat(remark, tmpremark);
+		snprintf(tmpremark, MAX_REMARK, "REMARK CF=%8.5f\n", get_cf_evalue(&CF));
+		safe_remark_cat(remark, tmpremark, &remark_len);
+		snprintf(tmpremark, MAX_REMARK, "REMARK CF.app=%8.5f\n", get_apparent_cf_evalue(&CF));
+		safe_remark_cat(remark, tmpremark, &remark_len);
 
 		for (int j = 0; j < this->Population->FA->num_optres; ++j)
 		{
 			pRes = &this->Population->residue[this->Population->FA->optres[j].rnum];
 			pCF = &this->Population->FA->optres[j].cf;
 
-			sprintf(tmpremark, "REMARK optimizable residue %s %c %d\n", pRes->name, pRes->chn, pRes->number);
-			strcat(remark, tmpremark);
+			snprintf(tmpremark, MAX_REMARK, "REMARK optimizable residue %s %c %d\n", pRes->name, pRes->chn, pRes->number);
+			safe_remark_cat(remark, tmpremark, &remark_len);
 
-			sprintf(tmpremark, "REMARK CF.com=%8.5f\n", pCF->com);
-			strcat(remark, tmpremark);
-			sprintf(tmpremark, "REMARK CF.sas=%8.5f\n", pCF->sas);
-			strcat(remark, tmpremark);
-			sprintf(tmpremark, "REMARK CF.wal=%8.5f\n", pCF->wal);
-			strcat(remark, tmpremark);
-			sprintf(tmpremark, "REMARK CF.con=%8.5f\n", pCF->con);
-			strcat(remark, tmpremark);
-			sprintf(tmpremark, "REMARK Residue has an overall SAS of %.3f\n", pCF->totsas);
-			strcat(remark, tmpremark);
+			snprintf(tmpremark, MAX_REMARK, "REMARK CF.com=%8.5f\n", pCF->com);
+			safe_remark_cat(remark, tmpremark, &remark_len);
+			snprintf(tmpremark, MAX_REMARK, "REMARK CF.sas=%8.5f\n", pCF->sas);
+			safe_remark_cat(remark, tmpremark, &remark_len);
+			snprintf(tmpremark, MAX_REMARK, "REMARK CF.wal=%8.5f\n", pCF->wal);
+			safe_remark_cat(remark, tmpremark, &remark_len);
+			snprintf(tmpremark, MAX_REMARK, "REMARK CF.con=%8.5f\n", pCF->con);
+			safe_remark_cat(remark, tmpremark, &remark_len);
+			snprintf(tmpremark, MAX_REMARK, "REMARK Residue has an overall SAS of %.3f\n", pCF->totsas);
+			safe_remark_cat(remark, tmpremark, &remark_len);
 		}
 
 		for (int j = 0; j < this->Population->FA->npar; ++j)
 		{
-			sprintf(tmpremark, "REMARK [%8.3f]\n", this->Population->FA->opt_par[j]);
-			strcat(remark, tmpremark);
+			snprintf(tmpremark, MAX_REMARK, "REMARK [%8.3f]\n", this->Population->FA->opt_par[j]);
+			safe_remark_cat(remark, tmpremark, &remark_len);
 		}
 
 		if (this->Population->FA->refstructure == 1)
 		{
 			bool Hungarian = false;
-			sprintf(tmpremark, "REMARK %8.5f RMSD to ref. structure (no symmetry correction)\n",
+			snprintf(tmpremark, MAX_REMARK, "REMARK %8.5f RMSD to ref. structure (no symmetry correction)\n",
 				calc_rmsd(this->Population->FA, this->Population->atoms, this->Population->residue, this->Population->cleftgrid, this->Population->FA->npar, this->Population->FA->opt_par, Hungarian));
-			strcat(remark, tmpremark);
+			safe_remark_cat(remark, tmpremark, &remark_len);
 			Hungarian = true;
-			sprintf(tmpremark, "REMARK %8.5f RMSD to ref. structure     (symmetry corrected)\n",
+			snprintf(tmpremark, MAX_REMARK, "REMARK %8.5f RMSD to ref. structure     (symmetry corrected)\n",
 				calc_rmsd(this->Population->FA, this->Population->atoms, this->Population->residue, this->Population->cleftgrid, this->Population->FA->npar, this->Population->FA->opt_par, Hungarian));
-			strcat(remark, tmpremark);
+			safe_remark_cat(remark, tmpremark, &remark_len);
 		}
-		sprintf(tmpremark, "REMARK inputs: %s & %s\n", dockinp, gainp);
-		strcat(remark, tmpremark);
+		snprintf(tmpremark, MAX_REMARK, "REMARK inputs: %s & %s\n", dockinp, gainp);
+		safe_remark_cat(remark, tmpremark, &remark_len);
 
-		sprintf(sufix, "_%d_MODEL_%d.pdb", minPoints, num_result);
-		strcpy(tmp_end_strfile, end_strfile);
-		strcat(tmp_end_strfile, sufix);
+		snprintf(sufix, sizeof(sufix), "_%d_MODEL_%d.pdb", minPoints, num_result);
+		snprintf(tmp_end_strfile, MAX_PATH__, "%s%s", end_strfile, sufix);
 		if (Pose == this->Poses.begin() && Pose + 1 == this->Poses.end())
 		{
 			write_MODEL_pdb(true, true, nModel, this->Population->FA, this->Population->atoms, this->Population->residue, tmp_end_strfile, remark);
@@ -479,6 +683,9 @@ double BindingMode::compute_vibrational_correction() const
 {
 	if (!this->Population->FA->normal_modes) return 0.0;
 
+	// Return cached value if still valid
+	if (this->vib_cache_valid_) return this->vib_correction_cache_;
+
 	std::vector<encom::NormalMode> modes;
 	int mode_count = this->Population->FA->normal_modes;
 	const atom* atoms = this->Population->atoms;
@@ -496,10 +703,16 @@ double BindingMode::compute_vibrational_correction() const
 		}
 	}
 
-	if (modes.empty()) return 0.0;
+	if (modes.empty()) {
+		this->vib_correction_cache_ = 0.0;
+		this->vib_cache_valid_ = true;
+		return 0.0;
+	}
 
 	double T = static_cast<double>(this->Population->Temperature);
 	encom::VibrationalEntropy vs = encom::ENCoMEngine::compute_vibrational_entropy(modes, T);
 
-	return -T * vs.S_vib_kcal_mol_K;
+	this->vib_correction_cache_ = -T * vs.S_vib_kcal_mol_K;
+	this->vib_cache_valid_ = true;
+	return this->vib_correction_cache_;
 }

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 
-from .thermodynamics import Thermodynamics, StatMechEngine
+from .thermodynamics import Thermodynamics, StatMechEngine, kB_kcal
 
 try:
     from . import _core
@@ -36,6 +36,13 @@ class Pose:
     coordinates: Optional[np.ndarray] = None
     boltzmann_weight: float = 0.0
     
+    def __repr__(self) -> str:
+        rmsd_str = f" RMSD={self.rmsd:.2f}" if self.rmsd is not None else ""
+        return (
+            f"<Pose {self.index} E={self.energy:.3f}{rmsd_str} "
+            f"w={self.boltzmann_weight:.4g}>"
+        )
+
     def to_dict(self) -> dict:
         return {
             'index': self.index,
@@ -69,6 +76,9 @@ class BindingMode:
         self._poses: List[Pose] = []
         self._temperature: float = temperature
         self._cached_thermo: Optional[Thermodynamics] = None
+        # Receptor-bound ions and cofactors present in the complex.
+        # Each entry is a string "RESNAME:CHAIN:RESNUM", e.g. "MG:A:101".
+        self.receptor_cofactors: List[str] = []
 
     def _invalidate_cache(self) -> None:
         self._cached_thermo = None
@@ -180,7 +190,85 @@ class BindingPopulation:
             for pose in mode._poses:
                 engine.add_sample(pose.energy)
         return engine.compute()
+
+    def compute_super_cluster_thermodynamics(self) -> Thermodynamics:
+        """Compute thermodynamics using only the super-cluster subset.
+
+        Extracts the dominant energy basin via SuperCluster, then
+        computes canonical ensemble thermodynamics on the filtered set.
+
+        Returns:
+            Thermodynamics for the super-cluster subset.
+        """
+        from .supercluster import SuperCluster
+        all_energies = [p.energy for m in self._modes for p in m._poses]
+        if not all_energies:
+            return Thermodynamics(
+                temperature=self._temperature, log_Z=0.0,
+                free_energy=float('inf'), mean_energy=float('inf'),
+                mean_energy_sq=float('inf'), heat_capacity=0.0,
+                entropy=0.0, std_energy=0.0,
+            )
+        sc = SuperCluster(all_energies)
+        filtered = sc.filter_energies()
+        engine = StatMechEngine(self._temperature)
+        for e in filtered:
+            engine.add_sample(e)
+        return engine.compute()
     
+    def get_shannon_entropy(self) -> float:
+        """Population-level Shannon configurational entropy.
+
+        S = -kB * sum(p_i * ln(p_i)) over all poses across all modes,
+        where p_i are Boltzmann probabilities.
+
+        Returns:
+            Shannon entropy in kcal/mol/K
+        """
+        import math
+
+        all_energies = []
+        for mode in self._modes:
+            for pose in mode._poses:
+                all_energies.append(pose.energy)
+
+        if not all_energies:
+            return 0.0
+
+        beta = 1.0 / (kB_kcal * self._temperature)
+        # Log-sum-exp for numerical stability
+        neg_beta_e = [-beta * e for e in all_energies]
+        max_val = max(neg_beta_e)
+        log_Z = max_val + math.log(sum(math.exp(v - max_val) for v in neg_beta_e))
+
+        shannon_S = 0.0
+        for e in all_energies:
+            log_p = -beta * e - log_Z
+            p = math.exp(log_p)
+            if p > 1e-30:
+                shannon_S -= p * log_p
+        shannon_S *= kB_kcal
+
+        return shannon_S
+
+    def get_deltaG_matrix(self) -> List[List[float]]:
+        """ΔG matrix between all pairs of binding modes.
+
+        matrix[i][j] = F_i - F_j. Anti-symmetric: matrix[i][j] = -matrix[j][i].
+
+        Returns:
+            n x n matrix of pairwise ΔG values (kcal/mol)
+        """
+        n = len(self._modes)
+        energies = [m.free_energy for m in self._modes]
+        matrix = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            for j in range(i + 1, n):
+                dg = energies[i] - energies[j]
+                matrix[i][j] = dg
+                matrix[j][i] = -dg
+        return matrix
+
     @property
     def n_modes(self) -> int:
         """Number of binding modes."""
@@ -257,7 +345,7 @@ class Docking:
         _flag_keys = {
             "DEEFLX", "ROTOBS", "NORMAR", "USEACS", "EXCHET", "INCHOH",
             "NOINTR", "OMITBU", "VINDEX", "HTPMOD", "OUTRNG", "USEDEE",
-            "NRGSUI", "SCOLIG", "SCOOUT", "ROTOUT",
+            "NRGSUI", "SCOLIG", "SCOOUT", "ROTOUT", "SUPCLU",
         }
 
         # Initialise list accumulators so callers can always iterate them.

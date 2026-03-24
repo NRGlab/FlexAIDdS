@@ -297,9 +297,34 @@ class Atom:
     element: str
     record: str  # 'ATOM' or 'HETATM'
 
+    def __repr__(self) -> str:
+        return (
+            f"<Atom {self.serial} {self.name} {self.resname} "
+            f"{self.chainid}{self.resseq}>"
+        )
+
     @property
     def coords(self) -> np.ndarray:
         return np.array([self.x, self.y, self.z])
+
+
+# ── Ion classification ────────────────────────────────────────────────────────
+_ION_RESNAMES: frozenset = frozenset({
+    "MG", "ZN", "CA", "NA", "K", "FE", "FE2", "FE3",
+    "CU", "CU1", "CU2", "MN", "CO", "NI", "CL", "BR",
+    "IOD", "LI", "CD", "HG", "PB",
+})
+
+
+def is_ion(atom: "Atom") -> bool:
+    """Return True if *atom* is a receptor-bound metal ion or halide.
+
+    Requires ``atom.record == 'HETATM'`` and a recognised single-atom residue
+    name (MG, ZN, CA, NA, K, FE, FE2, FE3, CU, CU1, CU2, MN, CO, NI, CL,
+    BR, IOD, LI, CD, HG, PB).  Protein Cα atoms (ATOM record, residue ALA
+    etc.) are *not* matched even though the atom name may be "CA".
+    """
+    return atom.record == "HETATM" and atom.resname.strip() in _ION_RESNAMES
 
 
 @dataclass
@@ -333,6 +358,14 @@ class PDBStructure:
             if a.chainid not in seen:
                 seen.append(a.chainid)
         return seen
+
+    def __repr__(self) -> str:
+        chains = self.get_chain_ids()
+        chain_str = ",".join(chains) if chains else "none"
+        return (
+            f"<PDBStructure atoms={len(self.atoms)} "
+            f"chains=[{chain_str}]>"
+        )
 
 
 def read_pdb(path: str) -> PDBStructure:
@@ -471,6 +504,12 @@ class SphereRecord:
     z: float
     radius: float
     cleft_id: int = 1
+
+    def __repr__(self) -> str:
+        return (
+            f"<SphereRecord ({self.x:.2f}, {self.y:.2f}, {self.z:.2f}) "
+            f"r={self.radius:.2f} cleft={self.cleft_id}>"
+        )
 
     @property
     def coords(self) -> np.ndarray:

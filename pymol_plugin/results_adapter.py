@@ -16,6 +16,15 @@ except ImportError as exc:
     ) from exc
 
 
+def _safe_int(value, name: str = "value") -> Optional[int]:
+    """Convert to int with a user-friendly error message."""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        print(f"ERROR: '{value}' is not a valid integer for {name}.")
+        return None
+
+
 _loaded_result: Optional[DockingResult] = None
 _loaded_objects: Dict[int, List[str]] = {}
 _loaded_prefix: str = "flexaids"
@@ -87,7 +96,10 @@ def show_binding_mode(mode_id: int, show_all: int = 0) -> None:
         mode_id: Numeric binding-mode identifier.
         show_all: 1 to show all poses in the mode, 0 for best pose only.
     """
-    mode = _get_mode(int(mode_id))
+    mid = _safe_int(mode_id, "mode_id")
+    if mid is None:
+        return
+    mode = _get_mode(mid)
     if mode is None:
         print("ERROR: No loaded result set or mode not found.")
         return
@@ -128,7 +140,10 @@ def color_mode_by_score(mode_id: int, metric: str = "cf") -> None:
         mode_id: Numeric binding-mode identifier.
         metric: 'cf' or 'free_energy'. Lower values are colored red.
     """
-    mode = _get_mode(int(mode_id))
+    mid = _safe_int(mode_id, "mode_id")
+    if mid is None:
+        return
+    mode = _get_mode(mid)
     if mode is None:
         print("ERROR: No loaded result set or mode not found.")
         return
@@ -161,16 +176,23 @@ def color_mode_by_score(mode_id: int, metric: str = "cf") -> None:
         t = (value - vmin) / vrange
         t = max(0.0, min(1.0, t))
         color_name = f"{_loaded_prefix}_{metric}_m{mode.mode_id}_p{pose.pose_rank}"
-        cmd.set_color(color_name, [1.0 - t, 0.0, t])
+        # Burgundy red (0.502, 0.0, 0.125) → purple blue (0.294, 0.0, 0.510)
+        r = 0.502 + t * (0.294 - 0.502)
+        g = 0.0
+        b = 0.125 + t * (0.510 - 0.125)
+        cmd.set_color(color_name, [r, g, b])
         cmd.color(color_name, obj_name)
         cmd.enable(obj_name)
 
-    print(f"Colored mode {mode.mode_id} by {metric} (red=lower, blue=higher).")
+    print(f"Colored mode {mode.mode_id} by {metric} (burgundy=lower, purple=higher).")
 
 
 def show_mode_details(mode_id: int) -> None:
     """Print thermodynamic summary for one loaded mode."""
-    mode = _get_mode(int(mode_id))
+    mid = _safe_int(mode_id, "mode_id")
+    if mid is None:
+        return
+    mode = _get_mode(mid)
     if mode is None:
         print("ERROR: No loaded result set or mode not found.")
         return

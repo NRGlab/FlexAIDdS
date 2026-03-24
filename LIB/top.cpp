@@ -3,8 +3,14 @@
 #include "Vcontacts.h"
 #include "config_parser.h"
 #include "config_defaults.h"
+#include "Mol2Reader.h"
+#include "SdfReader.h"
+#include "CleftDetector.h"
+#include "statmech.h"
 
+#include <cstring>
 #include <string>
+#include <vector>
 
 static void print_usage(const char* progname) {
 	printf("FlexAIDdS — Entropy-driven molecular docking\n\n");
@@ -72,7 +78,16 @@ int main(int argc, char **argv){
 	memset(GB,0,sizeof(GB_Global));
 	memset(VC,0,sizeof(VC_Global));
 
-	FA->contacts = (int*)malloc(100000*sizeof(int));
+	// MIF/RefLig/GridPrio non-zero defaults (pointers already NULL from memset)
+	FA->mif_temperature = 300.0f;
+	FA->grid_prio_percent = 100.0f;
+	FA->reflig_seed_fraction = 0.25f;
+	FA->reflig_k_nearest = 10;
+	FA->reflig_hetatm_fallback = 1;
+	FA->autoflex_enabled = 1;  // auto-flex key binding residues by default
+	FA->autoflex_max = 5;
+
+	FA->contacts = (int*)malloc(MAX_ATOM_NUMBER*sizeof(int));
 	if(FA->contacts == NULL){
 		fprintf(stderr,"ERROR: Could not allocate memory for contacts\n");
 		Terminate(2);
@@ -117,6 +132,7 @@ int main(int argc, char **argv){
 	FA->dee_clash = 0.5;
 	FA->intrafraction = 1.0;
 	FA->cluster_rmsd = 2.0f;
+	FA->use_super_cluster = false;
 	FA->rotamer_permeability = 0.8;
 	FA->temperature = 0;
 	FA->beta = 0.0;
@@ -149,6 +165,9 @@ int main(int argc, char **argv){
 	FA->acsweight = 1.0;
 
 	GB->outgen=0;
+	GB->entropy_weight=0.5;
+	GB->entropy_interval=0;
+	GB->use_shannon=0;
 	FA->num_grd=0;
 	FA->exclude_het=0;
 	FA->remove_water=1;
@@ -181,8 +200,8 @@ int main(int argc, char **argv){
 
 	FA->mov[0] = NULL;
 	FA->mov[1] = NULL;
-	strcpy(FA->clustering_algorithm,"CF");
-	strcpy(FA->vcontacts_self_consistency,"MAX");
+	strncpy(FA->clustering_algorithm,"CF",sizeof(FA->clustering_algorithm)-1); FA->clustering_algorithm[sizeof(FA->clustering_algorithm)-1]='\0';
+	strncpy(FA->vcontacts_self_consistency,"MAX",sizeof(FA->vcontacts_self_consistency)-1); FA->vcontacts_self_consistency[sizeof(FA->vcontacts_self_consistency)-1]='\0';
 	FA->vcontacts_planedef = 'X';
 
 	// ── Determine base path from executable location ──
@@ -199,10 +218,10 @@ int main(int argc, char **argv){
 			FA->base_path[i+1]='\0';
 		}
 	}else{
-		strcpy(FA->base_path,".");
+		strncpy(FA->base_path,".",MAX_PATH__-1); FA->base_path[MAX_PATH__-1]='\0';
 	}
 #else
-	strcpy(FA->base_path,".");
+	strncpy(FA->base_path,".",MAX_PATH__-1); FA->base_path[MAX_PATH__-1]='\0';
 #endif //_WIN32
 
 	printf("base path is '%s'\n", FA->base_path);
@@ -234,18 +253,18 @@ int main(int argc, char **argv){
 			Terminate(1);
 		}
 		legacy_mode = true;
-		strcpy(dockinp, argv[2]);
-		strcpy(gainp, argv[3]);
-		strcpy(end_strfile, argv[4]);
-		strcpy(FA->rrgfile, end_strfile);
+		strncpy(dockinp, argv[2], MAX_PATH__-1); dockinp[MAX_PATH__-1]='\0';
+		strncpy(gainp, argv[3], MAX_PATH__-1); gainp[MAX_PATH__-1]='\0';
+		strncpy(end_strfile, argv[4], MAX_PATH__-1); end_strfile[MAX_PATH__-1]='\0';
+		strncpy(FA->rrgfile, end_strfile, MAX_PATH__-1); FA->rrgfile[MAX_PATH__-1]='\0';
 	}
 	// Legacy auto-detect: if exactly 3 positional args and first does not end in .pdb
 	else if (argc == 4 && strstr(argv[1], ".pdb") == NULL && strstr(argv[1], ".PDB") == NULL) {
 		legacy_mode = true;
-		strcpy(dockinp, argv[1]);
-		strcpy(gainp, argv[2]);
-		strcpy(end_strfile, argv[3]);
-		strcpy(FA->rrgfile, end_strfile);
+		strncpy(dockinp, argv[1], MAX_PATH__-1); dockinp[MAX_PATH__-1]='\0';
+		strncpy(gainp, argv[2], MAX_PATH__-1); gainp[MAX_PATH__-1]='\0';
+		strncpy(end_strfile, argv[3], MAX_PATH__-1); end_strfile[MAX_PATH__-1]='\0';
+		strncpy(FA->rrgfile, end_strfile, MAX_PATH__-1); FA->rrgfile[MAX_PATH__-1]='\0';
 	}
 	else {
 		// ── New mode: receptor ligand [options] ──
@@ -280,9 +299,6 @@ int main(int argc, char **argv){
 			using O = json::Object;
 			config = json::merge(config, V(O{{"advanced", V(O{{"assume_folded", V(true)}})}}));
 		}
-		if (use_folded) {
-			config = merge_json(config, nlohmann::json{{"advanced", {{"assume_folded", true}}}});
-		}
 
 		// Apply config to FA/GB structs
 		apply_config(config, FA, GB);
@@ -295,20 +311,167 @@ int main(int argc, char **argv){
 
 		// For now, the new mode sets the config values but still requires
 		// the legacy input files to be generated or provided.
-		// TODO: Phase 2 — direct PDB/MOL2 loading without .inp files.
+		// TODO: Direct PDB/MOL2 loading without .inp files.
+		//   Requires: auto-generate grid from cleft detection, load default
+		//   energy matrix + atom type definitions, build rotamer library,
+		//   and call read_pdb/read_mol2_ligand directly. See read_input()
+		//   for the full list of initialisation steps that must be replicated.
 		fprintf(stderr, "NOTE: Direct receptor/ligand mode is prepared (config applied).\n");
 		fprintf(stderr, "Input pipeline integration in progress. Use --legacy for full runs.\n");
 		fprintf(stderr, "Config loaded: %s\n", config_path.empty() ? "(defaults)" : config_path.c_str());
 
-		// Set output prefix for end_strfile
+		const char* receptor_path = argv[1];
+		const char* ligand_path   = argv[2];
+
+		// Set output prefix
 		strncpy(end_strfile, output_prefix.c_str(), MAX_PATH__ - 1);
 		end_strfile[MAX_PATH__ - 1] = '\0';
-		strcpy(FA->rrgfile, end_strfile);
+		strncpy(FA->rrgfile, end_strfile, MAX_PATH__-1); FA->rrgfile[MAX_PATH__-1]='\0';
 
+		// GA input file not used in direct mode — config already applied
 		dockinp[0] = '\0';
 		gainp[0] = '\0';
 
-		Terminate(0);
+		// ── Direct PDB/MOL2 loading pipeline ──────────────────────────
+		char* receptor_file = argv[1];
+		char* ligand_file   = argv[2];
+
+		printf("Direct loading mode: receptor=%s, ligand=%s\n",
+		       receptor_file, ligand_file);
+
+		// ── 1. Interaction matrix ──
+		{
+			char emat[MAX_PATH__];
+			if (!strcmp(FA->dependencies_path, "")) {
+				strcpy(emat, FA->base_path);
+			} else {
+				strcpy(emat, FA->dependencies_path);
+			}
+#ifdef _WIN32
+			strcat(emat, "\\MC_st0r5.2_6.dat");
+#else
+			strcat(emat, "/MC_st0r5.2_6.dat");
+#endif
+			printf("interaction matrix is <%s>\n", emat);
+			read_emat(FA, emat);
+		}
+
+		// ── 2. Check if target is RNA ──
+		if (rna_structure(receptor_file)) {
+			printf("target molecule is a RNA structure\n");
+			FA->is_protein = 0;
+		}
+
+		// ── 3. Definition of types ──
+		char deftyp[MAX_PATH__];
+		{
+			if (!strcmp(FA->dependencies_path, "")) {
+				strcpy(deftyp, FA->base_path);
+			} else {
+				strcpy(deftyp, FA->dependencies_path);
+			}
+			if (FA->is_protein) {
+#ifdef _WIN32
+				strcat(deftyp, "\\AMINO.def");
+#else
+				strcat(deftyp, "/AMINO.def");
+#endif
+			} else {
+#ifdef _WIN32
+				strcat(deftyp, "\\NUCLEOTIDES.def");
+#else
+				strcat(deftyp, "/NUCLEOTIDES.def");
+#endif
+			}
+			printf("definition of types is <%s>\n", deftyp);
+		}
+
+		// ── 4. Read receptor PDB ──
+		{
+			// Create temporary cleaned PDB
+			char tmpprotname[MAX_PATH__];
+			strncpy(tmpprotname, receptor_file, MAX_PATH__ - 20);
+			tmpprotname[MAX_PATH__ - 20] = '\0';
+
+			// Find filename portion and create temp name
+			char* dot = strrchr(tmpprotname, '.');
+			srand((unsigned int)time(NULL));
+			int random_num = rand() % 900000 + 100000;
+			char random_str[32];
+			sprintf(random_str, "_tmp_%d.pdb", random_num);
+			if (dot) {
+				strcpy(dot, random_str);
+			} else {
+				strcat(tmpprotname, random_str);
+			}
+
+			modify_pdb(receptor_file, tmpprotname, FA->exclude_het, FA->remove_water, FA->is_protein,
+			           FA->keep_ions, FA->keep_structural_waters, FA->structural_water_bfactor_max);
+			read_pdb(FA, &atoms, &residue, tmpprotname);
+			remove(tmpprotname);
+		}
+
+		residue[FA->res_cnt].latm[0] = FA->atm_cnt;
+		for (int k = 1; k <= FA->res_cnt; k++) {
+			FA->atm_cnt_real += residue[k].latm[0] - residue[k].fatm[0] + 1;
+		}
+
+		calc_center(FA, atoms, residue);
+
+		if (FA->is_protein) {
+			residue_conect(FA, atoms, residue, deftyp);
+		}
+		assign_types(FA, atoms, residue, deftyp);
+
+		// ── 5. Read ligand (MOL2 or SDF) ──
+		{
+			const char* ext = strrchr(ligand_file, '.');
+			int lig_ok = 0;
+			bool is_sdf = false;
+			if (ext) {
+				is_sdf = (strcmp(ext, ".sdf") == 0 || strcmp(ext, ".SDF") == 0 ||
+				          strcmp(ext, ".mol") == 0 || strcmp(ext, ".MOL") == 0);
+			}
+			if (is_sdf) {
+				printf("read ligand SDF <%s>\n", ligand_file);
+				lig_ok = read_sdf_ligand(FA, &atoms, &residue, ligand_file);
+			} else {
+				printf("read ligand MOL2 <%s>\n", ligand_file);
+				lig_ok = read_mol2_ligand(FA, &atoms, &residue, ligand_file);
+			}
+			if (!lig_ok) {
+				fprintf(stderr, "ERROR: Failed to read ligand file: %s\n", ligand_file);
+				Terminate(2);
+			}
+		}
+
+		// ── 6. Assign radii and types ──
+		assign_radii_types(FA, atoms, residue);
+		printf("radii are now assigned\n");
+
+		// ── 7. Automatic binding site detection ──
+		{
+			printf("AUTO binding-site detection (CleftDetector) ...\n");
+			strcpy(FA->rngopt, "locclf");
+
+			sphere* spheres = detect_cleft(atoms, residue, FA->atm_cnt_real, FA->res_cnt);
+			if (spheres == NULL) {
+				fprintf(stderr, "ERROR: AUTO cleft detection found no cavities.\n");
+				Terminate(2);
+			}
+
+			cleftgrid = generate_grid(FA, spheres, atoms, residue);
+			calc_cleftic(FA, cleftgrid);
+
+			// Free spheres linked list
+			while (spheres != NULL) {
+				sphere* prev = spheres->prev;
+				free(spheres);
+				spheres = prev;
+			}
+		}
+
+		printf("Direct loading: receptor/ligand structures loaded, cleft detected\n");
 	}
 
 	//printf("END FILE:<%s>\n",end_strfile);
@@ -358,10 +521,34 @@ int main(int argc, char **argv){
 	FA->map_par_sidechain_last = NULL;
 	
 	/////////////////////////////////////////////////////////////////////////////////
-  
-	printf("Reading input (%s)...\n",dockinp);
-	read_input(FA,&atoms,&residue,&rotamer,&cleftgrid,dockinp);
-	
+
+	if (legacy_mode) {
+		printf("Reading input (%s)...\n",dockinp);
+		read_input(FA,&atoms,&residue,&rotamer,&cleftgrid,dockinp);
+	} else {
+		// Direct mode: set up IC bounds and optimization parameters
+		// (receptor, ligand, and cleft grid were already loaded above)
+		ic_bounds(FA, FA->rngopt);
+
+		FA->translational = 1;
+
+		int opt[2] = {0, 0};
+		char chain = ' ';
+		add2_optimiz_vec(FA, atoms, residue, opt, chain, "");
+		add2_optimiz_vec(FA, atoms, residue, opt, chain, "SC");
+		add2_optimiz_vec(FA, atoms, residue, opt, chain, "NM");
+
+		if (FA->translational && FA->num_grd == 1) {
+			fprintf(stderr, "ERROR: the binding-site has no anchor points\n");
+			Terminate(2);
+		}
+
+		update_optres(atoms, residue, FA->atm_cnt, FA->optres, FA->num_optres);
+
+		printf("Direct loading complete: %d atoms, %d residues, %d grid points, %d params\n",
+		       FA->atm_cnt, FA->res_cnt, FA->num_grd, FA->npar);
+	}
+
 	// memory allocation and initialization of VC struct
 	if (strcmp(FA->complf,"VCT")==0)
 	{
@@ -463,9 +650,8 @@ int main(int argc, char **argv){
 	//printf("=%8.5f\n",cf);
 
 	//-----------------------------------------------------------------------------------
-	strcpy(tmp_end_strfile,end_strfile);
-	strcat(tmp_end_strfile,"_INI.pdb");
-	strcpy(remark,"REMARK initial structure\n");
+	snprintf(tmp_end_strfile, MAX_PATH__, "%s_INI.pdb", end_strfile);
+	size_t remark_len = 0; remark[0] = '\0'; safe_remark_cat(remark, "REMARK initial structure\n", &remark_len);
 
 	// Should execute cf-vcfunction instead to avoid rotamer change for INI conf.
 	cf=ic2cf(FA,VC,atoms,residue,cleftgrid,FA->npar,FA->opt_par);
@@ -475,39 +661,39 @@ int main(int argc, char **argv){
 	printf("=%8.5f\n", get_cf_evalue(&cf));
 	//getchar();
   
-	sprintf(tmpremark,"REMARK CF=%8.5f\n", get_cf_evalue(&cf));
-	strcat(remark,tmpremark);
-	sprintf(tmpremark,"REMARK CF.app=%8.5f\n", get_apparent_cf_evalue(&cf));
-	strcat(remark,tmpremark);
+	snprintf(tmpremark,MAX_REMARK,"REMARK CF=%8.5f\n", get_cf_evalue(&cf));
+	safe_remark_cat(remark,tmpremark,&remark_len);
+	snprintf(tmpremark,MAX_REMARK,"REMARK CF.app=%8.5f\n", get_apparent_cf_evalue(&cf));
+	safe_remark_cat(remark,tmpremark,&remark_len);
 
 	for(i=0;i<FA->num_optres;i++){
     
 		res_ptr = &residue[FA->optres[i].rnum];
 		cf_ptr = &FA->optres[i].cf;
 
-		sprintf(tmpremark,"REMARK optimizable residue %s %c %d\n",
+		snprintf(tmpremark,MAX_REMARK,"REMARK optimizable residue %s %c %d\n",
 			res_ptr->name,res_ptr->chn,res_ptr->number);
-		strcat(remark,tmpremark);
-    
-		sprintf(tmpremark,"REMARK CF.com=%8.5f\n",cf_ptr->com);
-		strcat(remark,tmpremark);
-		sprintf(tmpremark,"REMARK CF.sas=%8.5f\n",cf_ptr->sas);
-		strcat(remark,tmpremark);
-		sprintf(tmpremark,"REMARK CF.wal=%8.5f\n",cf_ptr->wal);
-		strcat(remark,tmpremark);
-		sprintf(tmpremark,"REMARK CF.con=%8.5f\n",cf_ptr->con);
-		strcat(remark,tmpremark);
-		sprintf(tmpremark,"REMARK Residue has an overall SAS of %.3f\n",cf_ptr->totsas);
-		strcat(remark,tmpremark);
+		safe_remark_cat(remark,tmpremark,&remark_len);
+
+		snprintf(tmpremark,MAX_REMARK,"REMARK CF.com=%8.5f\n",cf_ptr->com);
+		safe_remark_cat(remark,tmpremark,&remark_len);
+		snprintf(tmpremark,MAX_REMARK,"REMARK CF.sas=%8.5f\n",cf_ptr->sas);
+		safe_remark_cat(remark,tmpremark,&remark_len);
+		snprintf(tmpremark,MAX_REMARK,"REMARK CF.wal=%8.5f\n",cf_ptr->wal);
+		safe_remark_cat(remark,tmpremark,&remark_len);
+		snprintf(tmpremark,MAX_REMARK,"REMARK CF.con=%8.5f\n",cf_ptr->con);
+		safe_remark_cat(remark,tmpremark,&remark_len);
+		snprintf(tmpremark,MAX_REMARK,"REMARK Residue has an overall SAS of %.3f\n",cf_ptr->totsas);
+		safe_remark_cat(remark,tmpremark,&remark_len);
 		
 	}
 	
 	for(i=0;i<FA->npar;i++){
-		sprintf(tmpremark,"REMARK [%8.3f]\n",FA->opt_par[i]);
-		strcat(remark,tmpremark);
+		snprintf(tmpremark,MAX_REMARK,"REMARK [%8.3f]\n",FA->opt_par[i]);
+		safe_remark_cat(remark,tmpremark,&remark_len);
 	}
-	sprintf(tmpremark,"REMARK inputs: %s & %s",dockinp,gainp);
-	strcat(remark,tmpremark);
+	snprintf(tmpremark,MAX_REMARK,"REMARK inputs: %s & %s\n",dockinp,gainp);
+	safe_remark_cat(remark,tmpremark,&remark_len);
 	
 	if (FA->htpmode == false) {write_pdb(FA,atoms,residue,tmp_end_strfile,remark);}
 
@@ -586,10 +772,28 @@ int main(int argc, char **argv){
 			////////////////////////////////
       
 			/******************************************************************/
-      
+
+			// ── Post-GA ensemble thermodynamic summary ──
+			if (FA->temperature > 0 && n_chrom_snapshot > 0) {
+				statmech::StatMechEngine post_engine(static_cast<double>(FA->temperature));
+				for (int si = 0; si < n_chrom_snapshot; si++) {
+					post_engine.add_sample(chrom_snapshot[si].evalue);
+				}
+				auto post_thermo = post_engine.compute();
+				printf("\n======= Post-GA Ensemble Thermodynamics (T=%uK) =======\n", FA->temperature);
+				printf("  Free energy F  = %10.4f kcal/mol\n", post_thermo.free_energy);
+				printf("  Mean energy <E>= %10.4f kcal/mol\n", post_thermo.mean_energy);
+				printf("  Entropy S      = %10.6f kcal/(mol*K)\n", post_thermo.entropy);
+				printf("  -TS            = %10.4f kcal/mol\n", -static_cast<double>(FA->temperature) * post_thermo.entropy);
+				printf("  Heat capacity  = %10.4f\n", post_thermo.heat_capacity);
+				printf("  Std energy     = %10.4f kcal/mol\n", post_thermo.std_energy);
+				printf("  Ensemble size  = %d\n", n_chrom_snapshot);
+				printf("========================================================\n\n");
+			}
+
 			printf("clustering all individuals in GA...");
 			fflush(stdout);
-            
+
 			printf("n_chrom_snapshot=%d\n", n_chrom_snapshot);
 
 			if( strcmp(FA->clustering_algorithm,"FO") == 0 )
@@ -804,9 +1008,13 @@ int main(int argc, char **argv){
 
 	if(GB != NULL) { free(GB); }
 
-	if(FA != NULL) { 
+	if(FA != NULL) {
 		free(FA->contacts);
-		free(FA); 
+		free(FA->mif_energies);
+		free(FA->mif_sorted);
+		free(FA->mif_cdf);
+		free(FA->reflig_nearest_grid);
+		free(FA);
 	}
 
 

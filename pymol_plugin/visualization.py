@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 try:
-    from pymol import cmd, stored
+    from pymol import cmd
     import pymol  # noqa: F401
 except ImportError as exc:
     raise ImportError("PyMOL not available") from exc
@@ -146,6 +146,11 @@ def load_binding_modes(output_dir: str, temperature: float = 300.0) -> None:
 
         _loaded_modes[mode_name] = record
 
+    # Sync with results_adapter so entropy_heatmap, animation, ITC work
+    # regardless of whether user loaded via flexaids_load or flexaids_load_results
+    from . import results_adapter
+    results_adapter._loaded_result = result
+
     n_modes = len(_loaded_modes)
     n_poses = sum(len(rec.pdb_objects) for rec in _loaded_modes.values())
     print(f"Loaded {n_modes} binding modes ({n_poses} PDB objects) from {_output_dir}")
@@ -192,8 +197,21 @@ def show_pose_ensemble(mode_name: str, show_all: bool = True) -> None:
     print(f"Showing {label} for {mode_name} ({len(rec.pdb_objects)} PDB objects).")
 
 
+def _burgundy_purple_rgb(t: float):
+    """Interpolate burgundy red → purple blue.
+
+    t = 0.0 → burgundy red (0.502, 0.0, 0.125)
+    t = 1.0 → purple blue  (0.294, 0.0, 0.510)
+    """
+    t = max(0.0, min(1.0, t))
+    r = 0.502 + t * (0.294 - 0.502)
+    g = 0.0
+    b = 0.125 + t * (0.510 - 0.125)
+    return [r, g, b]
+
+
 def color_by_boltzmann_weight(mode_name: str) -> None:
-    """Color poses by Boltzmann weight (blue = low probability, red = high)."""
+    """Color poses by Boltzmann weight (burgundy = high probability, purple = low)."""
     if not _loaded_modes:
         print("ERROR: No modes loaded. Use 'flexaids_load' first.")
         return
@@ -219,14 +237,16 @@ def color_by_boltzmann_weight(mode_name: str) -> None:
 
     for index, (obj, weight) in enumerate(zip(rec.pdb_objects, weights)):
         t = (weight - w_min) / w_range
+        # High weight = burgundy red (t=1 → frac=0), low weight = purple blue (t=0 → frac=1)
+        frac = 1.0 - t
         color_name = f"flexaids_bw_{mode_name}_{index}"
-        cmd.set_color(color_name, [t, 0.0, 1.0 - t])
+        cmd.set_color(color_name, _burgundy_purple_rgb(frac))
         cmd.color(color_name, obj)
         cmd.enable(obj)
 
     print(
         f"Colored {len(rec.pdb_objects)} poses for {mode_name} by Boltzmann weight "
-        "(blue=low, red=high)."
+        "(burgundy=high, purple=low)."
     )
 
 
@@ -296,10 +316,3 @@ def export_to_nrgsuite(output_dir: str, nrgsuite_file: str) -> None:
         return
 
     print(f"Exported {len(_loaded_modes)} binding modes to {out_path}")
-
-
-cmd.extend("flexaids_load", load_binding_modes)
-cmd.extend("flexaids_show_ensemble", show_pose_ensemble)
-cmd.extend("flexaids_color_boltzmann", color_by_boltzmann_weight)
-cmd.extend("flexaids_thermo", show_thermodynamics)
-cmd.extend("flexaids_export", export_to_nrgsuite)

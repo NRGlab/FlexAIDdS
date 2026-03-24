@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import math
+import sys
 import tempfile
 import textwrap
 from pathlib import Path
 from typing import List
 
 import pytest
+
+# Ensure pymol_plugin (repo root) is importable for Phase 3 tests
+_repo_root = Path(__file__).resolve().parent.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -125,6 +131,42 @@ def flexaid_config_file(tmp_path: Path) -> Path:
     cfg = tmp_path / "test.inp"
     cfg.write_text(content)
     return cfg
+
+
+@pytest.fixture
+def scalar_energy_matrix_file(tmp_path: Path) -> Path:
+    """8-type scalar energy matrix .dat file."""
+    roman = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"]
+    lines = []
+    val = -0.72
+    for i in range(8):
+        for j in range(i, 8):
+            label = f"{roman[i]}-{roman[j]}".rjust(10)
+            lines.append(f"{label} = {val:10.4f}\n")
+            val += 0.33
+    path = tmp_path / "scalar_8type.dat"
+    path.write_text("".join(lines))
+    return path
+
+
+@pytest.fixture
+def small_contact_table():
+    """Pre-built ContactTable with 4 types for testing."""
+    import numpy as np
+    from flexaidds.energy_matrix import ContactTable
+
+    return ContactTable(
+        ntypes=4,
+        counts=np.array([
+            [20, 15, 5, 2],
+            [15, 10, 8, 3],
+            [5, 8, 12, 6],
+            [2, 3, 6, 4],
+        ], dtype=np.int64),
+        type_totals=np.array([200, 150, 100, 50], dtype=np.int64),
+        n_structures=10,
+        distance_cutoff=6.0,
+    )
 
 
 @pytest.fixture

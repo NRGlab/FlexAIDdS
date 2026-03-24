@@ -63,6 +63,8 @@ struct chromosome_struct{
 	double evalue;   // NOT the apparent cf
 	double app_evalue;   // THE apparent cf
 	double fitnes;   // fitness score of chromosome
+	double boltzmann_weight;  // Boltzmann probability p_i = exp(-β E_i) / Z
+	double free_energy;       // per-pose free energy contribution (kcal/mol)
 	char   status;   /* status, n -> eval is correct
 			    o -> need to recalculate eval
 			 */
@@ -105,11 +107,22 @@ struct GB_Global_struct{
 	int          num_print;
 	int	     	print_int;
 
+	// Entropy convergence (opt-in early termination)
+	int          entropy_convergence;    // 0=off (default), 1=on
+	int          entropy_check_interval; // check every N generations (default: 10)
+	int          entropy_window;         // plateau window size (default: 5)
+	double       entropy_rel_threshold;  // relative change threshold (default: 0.01)
+
 	char         pop_init_method[9];
 	char         pop_init_file[MAX_PATH__];
 	char         fitness_model[9];
 	char         rep_model[9];
 	int          duplicates;
+
+	// ── Entropy-driven fitness parameters ──
+	double       entropy_weight;      // blending: 0.0 = pure rank, 1.0 = full Boltzmann (default 0.5)
+	int          entropy_interval;    // compute ensemble thermo every N generations (0 = off)
+	int          use_shannon;         // include Shannon configurational entropy in fitness
 
 };
 typedef struct GB_Global_struct GB_Global;

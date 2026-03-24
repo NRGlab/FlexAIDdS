@@ -1,5 +1,6 @@
 #include "flexaid.h"
 #include "fileio.h"
+#include "ion_utils.h"
 
 #define NAA 20
 #define NNA 4
@@ -21,12 +22,20 @@ static char protein_atoms_order[NLIST][5]   = { " N  "," CA "," C  "," O  "," CB
 						" CH "," CH1"," CH2"," OH "," NH1"," NH2",
 						" OXT" };
 
-void modify_pdb(char* infile, char* outfile, int exclude_het, int remove_water, int is_protein)
+// PDB B-factor occupies columns 60-65 (0-indexed)
+static float pdb_bfactor(const char* buf) {
+    char tmp[7]; strncpy(tmp, &buf[60], 6); tmp[6]='\0';
+    return (float)atof(tmp);
+}
+
+void modify_pdb(char* infile, char* outfile, int exclude_het, int remove_water, int is_protein,
+                int keep_ions, int keep_structural_waters, float structural_water_bfactor_max)
 {
 	char bufnul[10];
 	char buffer[100];   // pdb line
 
-	char lines[50][100]; // store residue lines
+	#define MAX_RESIDUE_LINES 50
+	char lines[MAX_RESIDUE_LINES][100]; // store residue lines
 	int  nlines=0;
 
 	int prev_resnum = -1;
@@ -83,7 +92,11 @@ void modify_pdb(char* infile, char* outfile, int exclude_het, int remove_water, 
 			if(resnum == prev_resnum && insert == prev_insert){
 				if(is_protein && is_natural_amino(res)){
 					// store line
-					strcpy(lines[nlines++],buffer);
+					if(nlines < MAX_RESIDUE_LINES){
+						strncpy(lines[nlines], buffer, sizeof(lines[0]) - 1);
+						lines[nlines][sizeof(lines[0]) - 1] = '\0';
+						nlines++;
+					}
 				}else if(!is_protein && is_natural_nucleic(res)){
 					fprintf(outfile_ptr,"%s",buffer);
 				}else{
@@ -99,17 +112,25 @@ void modify_pdb(char* infile, char* outfile, int exclude_het, int remove_water, 
 				}
 				
 				if(is_protein && is_natural_amino(res)){
-					strcpy(lines[nlines++],buffer);
+					if(nlines < MAX_RESIDUE_LINES){
+						strncpy(lines[nlines], buffer, sizeof(lines[0]) - 1);
+						lines[nlines][sizeof(lines[0]) - 1] = '\0';
+						nlines++;
+					}
 				}else if(!is_protein && is_natural_nucleic(res)){
-					fprintf(outfile_ptr,"%s",buffer);					
+					fprintf(outfile_ptr,"%s",buffer);
 				}else{
 					// ligands/mod. amino acids are marked as HETATM by default
 					fprintf(outfile_ptr,"HETATM%s",&buffer[6]);
 				}
-				
+
 			}else{
 				if(is_protein && is_natural_amino(res)){
-					strcpy(lines[nlines++],buffer);
+					if(nlines < MAX_RESIDUE_LINES){
+						strncpy(lines[nlines], buffer, sizeof(lines[0]) - 1);
+						lines[nlines][sizeof(lines[0]) - 1] = '\0';
+						nlines++;
+					}
 				}else if(is_natural_nucleic(res)){
 					fprintf(outfile_ptr,"%s",buffer);
 				}else{
@@ -126,9 +147,20 @@ void modify_pdb(char* infile, char* outfile, int exclude_het, int remove_water, 
 			// all other lines that do not start with 'ATOM  ' field
 
 			if(!strncmp(&buffer[0],"HETATM",6)){
-				if(exclude_het) { continue; }
-				else {
-					if(!strncmp(&buffer[17],"HOH",3) && remove_water){ continue; }
+				if(exclude_het) {
+					// Keep metal ions when keep_ions=1, regardless of exclude_het
+					if(keep_ions && is_ion_resname(&buffer[17])) { /* keep */ }
+					else { continue; }
+				} else {
+					if(!strncmp(&buffer[17],"HOH",3) && remove_water) {
+						// Retain low-B-factor structural waters when requested
+						if(keep_structural_waters) {
+							float bf = pdb_bfactor(buffer);
+							if(bf > structural_water_bfactor_max) continue;
+						} else {
+							continue;
+						}
+					}
 				}
 			}
 
@@ -187,9 +219,14 @@ void rewrite_residue2(char lines[][100], int nlines, int* wrote, FILE* outfile_p
 	
 	while((i=get_NextLine(lines,nlines)) != -1){
 		char newline[100];
-		strncpy(newline,lines[i],6);
-		sprintf(&newline[6],"%5d",++(*wrote));
-		strcat(&newline[11],&lines[i][11]);
+		memset(newline, 0, sizeof(newline));
+		memcpy(newline, lines[i], 6);
+		snprintf(&newline[6], 6, "%5d", ++(*wrote));
+		newline[11] = '\0'; // snprintf null-terminates at [11]
+		size_t tail_len = strlen(&lines[i][11]);
+		if(tail_len > sizeof(newline) - 12) tail_len = sizeof(newline) - 12;
+		memcpy(&newline[11], &lines[i][11], tail_len);
+		newline[11 + tail_len] = '\0';
 		fprintf(outfile_ptr,"%s",newline);
 		strcpy(lines[i],"                    ");
 	}

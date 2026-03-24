@@ -2,11 +2,15 @@
 #include "Vcontacts.h"
 #include "fileio.h"
 #include "hardware_dispatch.h"
+#include "MIFGrid.h"
+#include "CavityDetect/SpatialGrid.h"
 
 #include <random>
 #include <functional>
 #include <cstdint>
 #include <vector>
+#include <algorithm>
+#include <span>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -25,8 +29,9 @@
 #endif
 
 #include "statmech.h"
-#include "tencm.h"
+#include "tENCoM/tencm.h"
 #include "ShannonThermoStack/ShannonThermoStack.h"
+#include "fast_optics.hpp"
 #include "NATURaL/NATURaLDualAssembly.h"
 
 // in milliseconds
@@ -73,26 +78,14 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 	*memchrom=0; //num chrom allocated in memory
 
 	// for generation random doubles from [0,1[ (mutation crossover operators)
-	strcpy(PAUSEFILE,FA->state_path);
 #ifdef _WIN32
-	strcat(PAUSEFILE,"\\.pause");
+	snprintf(PAUSEFILE,MAX_PATH__,"%s\\.pause",FA->state_path);
+	snprintf(ABORTFILE,MAX_PATH__,"%s\\.abort",FA->state_path);
+	snprintf(STOPFILE,MAX_PATH__,"%s\\.stop",FA->state_path);
 #else
-	strcat(PAUSEFILE,"/.pause");
-#endif
-
-
-	strcpy(ABORTFILE,FA->state_path);
-#ifdef _WIN32
-	strcat(ABORTFILE,"\\.abort");
-#else
-	strcat(ABORTFILE,"/.abort");
-#endif
-
-	strcpy(STOPFILE,FA->state_path);
-#ifdef _WIN32
-	strcat(STOPFILE,"\\.stop");
-#else
-	strcat(STOPFILE,"/.stop");
+	snprintf(PAUSEFILE,MAX_PATH__,"%s/.pause",FA->state_path);
+	snprintf(ABORTFILE,MAX_PATH__,"%s/.abort",FA->state_path);
+	snprintf(STOPFILE,MAX_PATH__,"%s/.stop",FA->state_path);
 #endif
 
 	GB->num_genes=FA->npar;
@@ -103,20 +96,27 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 
 	printf("num_genes=%d\n",GB->num_genes);
 
-	//GB->rrg_skip=0;
-	GB->adaptive_ga=0;
-	GB->num_print=10;
-	GB->print_int=1;
-	GB->seed = 0;
+	printf("file in GA is <%s>\n",gainpfile);
 
-	GB->ssnum = 1000;
-	GB->pbfrac = 1.0;
-	GB->duplicates = 0;
-	GB->intragenes = 0;
+	if (gainpfile[0] != '\0') {
+		//GB->rrg_skip=0;
+		GB->adaptive_ga=0;
+		GB->num_print=10;
+		GB->print_int=1;
+		GB->seed = 0;
+
+	// Entropy convergence defaults (opt-in)
+	GB->entropy_convergence    = 0;
+	GB->entropy_check_interval = 10;
+	GB->entropy_window         = 5;
+	GB->entropy_rel_threshold  = 0.01;
 
 	printf("file in GA is <%s>\n",gainpfile);
 
-	read_gainputs(FA,GB,&geninterval,&popszpartition,gainpfile);
+		read_gainputs(FA,GB,&geninterval,&popszpartition,gainpfile);
+	} else {
+		printf("No GA input file — using pre-configured parameters\n");
+	}
 	unsigned int tt;
 	if (GB->seed==0)
 	{
@@ -198,6 +198,8 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 		(*chrom)[i].app_evalue = 0.0;
 		(*chrom)[i].evalue = 0.0;
 		(*chrom)[i].fitnes = 0.0;
+		(*chrom)[i].boltzmann_weight = 0.0;
+		(*chrom)[i].free_energy = 0.0;
 		(*chrom)[i].status = ' ';
 	}
 
@@ -221,6 +223,8 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 		(*chrom_snapshot)[i].app_evalue = 0.0;
 		(*chrom_snapshot)[i].evalue = 0.0;
 		(*chrom_snapshot)[i].fitnes = 0.0;
+		(*chrom_snapshot)[i].boltzmann_weight = 0.0;
+		(*chrom_snapshot)[i].free_energy = 0.0;
 		(*chrom_snapshot)[i].status = ' ';
 		//printf("chrom_snapshot[%d] allocated at address %p!\n", i, &(*chrom_snapshot)[i]);
 	}
@@ -262,6 +266,13 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 	int save_num_chrom = (int)(GB->num_chrom*SAVE_CHROM_FRACTION);
 	int nrejected = 0;
 
+	// Entropy convergence tracking
+	std::vector<double> entropy_history;
+	bool entropy_converged = false;
+	if (GB->entropy_convergence) {
+		entropy_history.reserve(GB->max_generations / GB->entropy_check_interval + 1);
+	}
+
 	////////////////////////////////
 	////// Genetic Algorithm ///////
 	////////////////////////////////
@@ -297,30 +308,43 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 
 			if(FA->output_range){
 #ifdef _WIN32
-				sprintf(gridfilename,"\\grid.%d.prt.pdb",i+1);
+				snprintf(gridfile,MAX_PATH__,"%s\\grid.%d.prt.pdb",FA->temp_path,i+1);
 #else
-				sprintf(gridfilename,"/grid.%d.prt.pdb",i+1);
+				snprintf(gridfile,MAX_PATH__,"%s/grid.%d.prt.pdb",FA->temp_path,i+1);
 #endif
-				strcpy(gridfile,FA->temp_path);
-				strcat(gridfile,gridfilename);
-
 				write_grid(FA,(*cleftgrid),gridfile);
 			}
 
 			slice_grid(FA,(*gene_lim),atoms,residue,cleftgrid);
 
 			if(FA->output_range){
-
 #ifdef _WIN32
-				sprintf(gridfilename,"\\grid.%d.slc.pdb",i+1);
+				snprintf(gridfile,MAX_PATH__,"%s\\grid.%d.slc.pdb",FA->temp_path,i+1);
 #else
-				sprintf(gridfilename,"/grid.%d.slc.pdb",i+1);
+				snprintf(gridfile,MAX_PATH__,"%s/grid.%d.slc.pdb",FA->temp_path,i+1);
 #endif
-
-				strcpy(gridfile,FA->temp_path);
-				strcat(gridfile,gridfilename);
-
 				write_grid(FA,(*cleftgrid),gridfile);
+			}
+
+			// Recompute MIF for adapted grid
+			if (FA->mif_enabled || FA->grid_prio_percent < 100.0f) {
+				std::vector<atom> protein_atoms(atoms, atoms + FA->atm_cnt_real);
+				cavity_detect::SpatialGrid sg;
+				sg.build(protein_atoms);
+				auto mif = mif::compute_mif(*cleftgrid, FA->num_grd,
+				                             atoms, FA->atm_cnt_real, sg);
+				free(FA->mif_energies); free(FA->mif_sorted); free(FA->mif_cdf);
+				FA->mif_count = static_cast<int>(mif.sorted_indices.size());
+				FA->mif_energies = static_cast<float*>(
+				    malloc(mif.energies.size() * sizeof(float)));
+				FA->mif_sorted = static_cast<int*>(
+				    malloc(mif.sorted_indices.size() * sizeof(int)));
+				std::copy_n(mif.energies.data(), mif.energies.size(), FA->mif_energies);
+				std::copy_n(mif.sorted_indices.data(), mif.sorted_indices.size(), FA->mif_sorted);
+				mif::build_sampling_cdf(mif, FA->mif_temperature);
+				FA->mif_cdf = static_cast<double*>(
+				    malloc(mif.cdf.size() * sizeof(double)));
+				std::copy_n(mif.cdf.data(), mif.cdf.size(), FA->mif_cdf);
 			}
 
 			validate_dups(GB, (*gene_lim), GB->num_genes);
@@ -341,7 +365,7 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 		  if((i/rrg_skip)*rrg_skip == i) rrg_flag=1;
 		  if((rrg_flag==1) && (GB->outgen==1)){
 		  if(FA->refstructure == 1){
-		  sprintf(tmp_rrgfile,"%s_%d.rrg",FA->rrgfile,i);
+		  snprintf(tmp_rrgfile,MAX_PATH__,"%s_%d.rrg",FA->rrgfile,i);
 		  //printf("%s\n",tmp_rrgfile);
 		  //PAUSE;
 		  write_rrg(FA,GB,(*chrom),(*gene_lim),atoms,residue,(*cleftgrid),tmp_rrgfile);
@@ -356,6 +380,27 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 
 		//printf("------fitness stats-------\navg=%8.3f\tmax=%8.3f\n",GB->fit_avg,GB->fit_max);
         //getchar();
+
+		// Entropy convergence check (opt-in via ENTRCNVG config keyword)
+		if (GB->entropy_convergence &&
+		    ((i + 1) % GB->entropy_check_interval == 0)) {
+			std::vector<double> pop_energies(GB->num_chrom);
+			for (int c = 0; c < GB->num_chrom; ++c)
+				pop_energies[c] = (*chrom)[c].evalue;
+			double H = shannon_thermo::compute_shannon_entropy(
+				pop_energies, shannon_thermo::DEFAULT_HIST_BINS);
+			entropy_history.push_back(H);
+
+			if (shannon_thermo::detect_entropy_plateau(
+			        entropy_history, GB->entropy_window,
+			        GB->entropy_rel_threshold)) {
+				printf("Entropy convergence at generation %d "
+				       "(H=%.4f nats, stable for %d checks)\n",
+				       i + 1, H, GB->entropy_window);
+				entropy_converged = true;
+				break;
+			}
+		}
 
 		nrejected = reproduce(FA,GB,VC,(*chrom),(*gene_lim),atoms,residue,(*cleftgrid),
 				      GB->rep_model,GB->mut_rate,GB->cross_rate,print,dice,duplicates,target);
@@ -376,11 +421,12 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 	}
 
 	printf("%d ligand conformers rejected\n", nrejected);
+	if (entropy_converged)
+		printf("GA terminated early by entropy convergence\n");
 
 	QuickSort((*chrom),0,GB->num_chrom-1,true);
 
-	strcpy(outfile,FA->rrgfile);
-	strcat(outfile,"_par.res");
+	snprintf(outfile,MAX_PATH__,"%s_par.res",FA->rrgfile);
 	if (FA->htpmode == false) {write_par((*chrom),(*gene_lim),i+1,outfile,GB->num_chrom,GB->num_genes);}
 
 	printf("sorting chrom_snapshot\n");
@@ -406,6 +452,27 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 		statmech::StatMechEngine sme(T_K);
 		for(int s = 0; s < n_chrom_snapshot; ++s)
 			sme.add_sample((*chrom_snapshot)[s].evalue);
+
+		// Optional super-cluster pre-filtering for faster Shannon entropy collapse
+		if (FA->use_super_cluster && n_chrom_snapshot > 4) {
+			std::vector<fast_optics::Point> energy_pts(n_chrom_snapshot);
+			for (int s = 0; s < n_chrom_snapshot; ++s)
+				energy_pts[s].coords = { (*chrom_snapshot)[s].evalue };
+
+			fast_optics::FastOPTICS foptics(energy_pts, std::max(4, n_chrom_snapshot / 20));
+			auto sc_indices = foptics.extractSuperCluster(fast_optics::ClusterMode::SUPER_CLUSTER_ONLY);
+
+			if (!sc_indices.empty() && sc_indices.size() < static_cast<size_t>(n_chrom_snapshot)) {
+				statmech::StatMechEngine sme_filtered(T_K);
+				for (size_t idx : sc_indices)
+					sme_filtered.add_sample((*chrom_snapshot)[idx].evalue);
+
+				printf("--- SuperCluster pre-filter: %zu / %d poses selected ---\n",
+				       sc_indices.size(), n_chrom_snapshot);
+				sme = sme_filtered;
+			}
+		}
+
 		statmech::Thermodynamics td = sme.compute();
 		printf("--- Thermodynamics (T = %.1f K, N = %d conformers) ---\n",
 		       td.temperature, n_chrom_snapshot);
@@ -429,7 +496,7 @@ int GA(FA_Global* FA, GB_Global* GB,VC_Global* VC,chromosome** chrom,chromosome*
 						sme, tencm_model, td.free_energy, T_K);
 
 				printf("--- ShannonThermoStack (vibrational entropy integration) ---\n");
-				printf("  Shannon conf entropy    = %10.4f bits\n", ftr.shannonEntropy);
+				printf("  Shannon conf entropy    = %10.4f nats\n", ftr.shannonEntropy);
 				printf("  Torsional vib entropy   = %10.6f kcal/(mol·K)\n", ftr.torsionalVibEntropy);
 				printf("  Entropy contribution    = %10.4f kcal/mol (-TΔS)\n", ftr.entropyContribution);
 				printf("  Total ΔG (F + vib corr) = %10.4f kcal/mol\n", ftr.deltaG);
@@ -480,6 +547,8 @@ void copy_chrom(chromosome* dest, const chromosome* src, int num_genes){
 	dest->evalue = src->evalue;
 	dest->app_evalue = src->app_evalue;
 	dest->fitnes = src->fitnes;
+	dest->boltzmann_weight = src->boltzmann_weight;
+	dest->free_energy = src->free_energy;
 	dest->status = src->status;
 
 	for(int j=0; j<num_genes; j++){
@@ -558,7 +627,7 @@ void fitness_stats(GB_Global* GB, const chromosome* chrom,int pop_size){
 	GB->fit_avg=0.0;
 
 	flag=1;
-	for(i=0;i<pop_size-i;i++){
+	for(i=0;i<pop_size;i++){
 		if (flag){
 			GB->fit_max=chrom[i].fitnes;
 			flag=0;
@@ -1131,6 +1200,62 @@ void calculate_fitness(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* chr
 		const int nopt  = FA->num_optres;
 		const int nctb  = FA->ntypes * FA->ntypes;
 
+		// ── Dirty-tracking optimisation ─────────────────────────────────
+		// ic2cf only modifies atoms belonging to optimizable residues
+		// (ligand + flex sidechains) and buildcc rebuilds their Cartesian
+		// coords. vcfunction writes .acs for these same atoms.
+		// When normal modes are disabled, we restore only these "dirty"
+		// atoms per chromosome instead of copying the entire atom array.
+		// This reduces per-eval memory bandwidth by 90%+ for typical systems.
+		bool has_normal_modes = false;
+		for (int p = 0; p < FA->npar; ++p) {
+			if (FA->map_par[p].typ == 3) { has_normal_modes = true; break; }
+		}
+
+		// Build sorted unique list of atom indices modified by ic2cf.
+		// Sources: mov[] lists (buildcc targets) + map_par[].atm (IC targets).
+		std::vector<int> dirty_atm;
+		std::vector<int> dirty_res_idx;
+		if (!has_normal_modes) {
+			// Atoms in mov[] rebuild lists (ligand + flex sidechain Cartesian)
+			for (int r = 0; r < FA->nors; ++r)
+				for (int m = 0; m < FA->nmov[r]; ++m)
+					dirty_atm.push_back(FA->mov[r][m]);
+			// Atoms directly referenced by map_par (IC fields: dis/ang/dih)
+			for (int p = 0; p < FA->npar; ++p)
+				dirty_atm.push_back(FA->map_par[p].atm);
+			// Cascade dihedral atoms (atoms whose .dih depends on a flex bond)
+			for (int p = 0; p < FA->npar; ++p) {
+				if (FA->map_par[p].typ == 2) {
+					int j = FA->map_par[p].atm;
+					int cat = atoms[j].rec[3];
+					while (cat != 0 && cat != FA->map_par[p].atm) {
+						dirty_atm.push_back(cat);
+						j = cat;
+						cat = atoms[j].rec[3];
+					}
+				}
+			}
+			// Sort and deduplicate
+			std::sort(dirty_atm.begin(), dirty_atm.end());
+			dirty_atm.erase(std::unique(dirty_atm.begin(), dirty_atm.end()),
+			                dirty_atm.end());
+
+			// Residue indices with rotamer genes (typ==4 modifies .rot)
+			for (int p = 0; p < FA->npar; ++p) {
+				if (FA->map_par[p].typ == 4)
+					dirty_res_idx.push_back(atoms[FA->map_par[p].atm].ofres);
+			}
+			std::sort(dirty_res_idx.begin(), dirty_res_idx.end());
+			dirty_res_idx.erase(
+				std::unique(dirty_res_idx.begin(), dirty_res_idx.end()),
+				dirty_res_idx.end());
+		}
+		const bool use_selective = !has_normal_modes &&
+		    static_cast<int>(dirty_atm.size()) < natm / 2;
+		const int n_dirty_atm = static_cast<int>(dirty_atm.size());
+		const int n_dirty_res = static_cast<int>(dirty_res_idx.size());
+
 		// Per-thread mutable atom arrays.
 		std::vector<std::vector<atom>>  tl_atoms(n_thr,
 		    std::vector<atom>(atoms, atoms + natm));
@@ -1139,7 +1264,7 @@ void calculate_fitness(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* chr
 		    std::vector<resid>(residue, residue + nres));
 		// Per-thread FA copies with redirected mutable scratch buffers.
 		std::vector<FA_Global>           tl_fa(n_thr, *FA);
-		std::vector<std::vector<int>>    tl_contacts(n_thr, std::vector<int>(100000, 0));
+		std::vector<std::vector<int>>    tl_contacts(n_thr, std::vector<int>(MAX_ATOM_NUMBER, 0));
 		std::vector<std::vector<float>>  tl_contrib(n_thr, std::vector<float>(nctb, 0.0f));
 		std::vector<std::vector<OptRes>> tl_optres(n_thr,
 		    std::vector<OptRes>(FA->optres, FA->optres + nopt));
@@ -1191,7 +1316,8 @@ void calculate_fitness(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* chr
 	shared(chrom, pop_size, GB, gene_lim, cleftgrid, target, \
 	       atoms, residue, FA, VC, \
 	       tl_atoms, tl_res, tl_fa, tl_optres, tl_vc, \
-	       natm, nres, nopt)
+	       natm, nres, nopt, \
+	       use_selective, dirty_atm, dirty_res_idx, n_dirty_atm, n_dirty_res)
 #endif
 		for (int ii = 0; ii < pop_size; ++ii) {
 			if (chrom[ii].status == 'n') continue;
@@ -1201,8 +1327,21 @@ void calculate_fitness(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* chr
 			const int tid = 0;
 #endif
 			// Reset per-thread state to the reference protein configuration.
-			std::copy(atoms,   atoms + natm,   tl_atoms[tid].begin());
-			std::copy(residue, residue + nres, tl_res[tid].begin());
+			// When normal modes are off, only restore the atoms/residues that
+			// ic2cf + vcfunction actually modify (typically <10% of total).
+			if (use_selective) {
+				for (int d = 0; d < n_dirty_atm; ++d) {
+					const int ai = dirty_atm[d];
+					tl_atoms[tid][ai] = atoms[ai];
+				}
+				for (int d = 0; d < n_dirty_res; ++d) {
+					const int ri = dirty_res_idx[d];
+					tl_res[tid][ri] = residue[ri];
+				}
+			} else {
+				std::copy(atoms,   atoms + natm,   tl_atoms[tid].begin());
+				std::copy(residue, residue + nres, tl_res[tid].begin());
+			}
 			// optres cf fields are cleared by vcfunction itself; pre-clear for safety.
 			for (int o = 0; o < nopt; ++o) {
 				tl_optres[tid][o].cf.com    = 0.0;
@@ -1270,6 +1409,89 @@ void calculate_fitness(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* chr
 		}
 	}
 
+	if(strcmp(method,"SMFREE")==0){
+		/* SMFREE — StatMech Free-energy-weighted fitness with niche sharing.
+		   Uses the StatMechEngine to compute Boltzmann weights from the
+		   current population's energies. Fitness blends rank-based fitness
+		   with thermodynamic Boltzmann probability:
+		     fitness_i = [(1-w) * rank_component + w * boltzmann_component] / share_i
+		   where w = entropy_weight ∈ [0,1].
+		   This biases selection toward thermodynamically favorable poses
+		   (low free energy) while maintaining diversity via niche sharing.
+		*/
+		if (FA->temperature > 0) {
+			const double T = static_cast<double>(FA->temperature);
+			statmech::StatMechEngine engine(T);
+
+			// Feed all chromosome energies into the engine.
+			for (int si = 0; si < GB->num_chrom; si++) {
+				engine.add_sample(chrom[si].evalue);
+			}
+
+			// Compute ensemble thermodynamics and Boltzmann weights.
+			auto thermo = engine.compute();
+			auto bweights = engine.boltzmann_weights();
+
+			// Store Boltzmann weights and free energy on each chromosome.
+			for (int si = 0; si < GB->num_chrom; si++) {
+				chrom[si].boltzmann_weight = bweights[static_cast<size_t>(si)];
+				chrom[si].free_energy = thermo.free_energy;
+			}
+
+			// Find max Boltzmann weight for normalisation of the Boltzmann component.
+			double max_bw = 0.0;
+			for (int si = 0; si < GB->num_chrom; si++) {
+				if (chrom[si].boltzmann_weight > max_bw)
+					max_bw = chrom[si].boltzmann_weight;
+			}
+			if (max_bw <= 0.0) max_bw = 1.0;
+
+			const double w = GB->entropy_weight;
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) default(none) \
+	shared(chrom, GB, FA, cleftgrid, max_bw, w)
+#endif
+			for (int pi = 0; pi < GB->num_chrom; pi++) {
+				// Niche sharing (same as PSHARE).
+				double pshare = 0.0;
+				for (int pj = 0; pj < GB->num_chrom; pj++) {
+					double prmsp = calc_rmsp(GB->num_genes,
+					                         chrom[pi].genes, chrom[pj].genes,
+					                         FA->map_par, cleftgrid);
+					if (prmsp <= GB->sig_share) {
+						pshare += (1.0 - pow((prmsp / GB->sig_share), GB->alpha));
+					}
+				}
+
+				// Rank component: normalised to [0, 1].
+				double rank_component = static_cast<double>(GB->num_chrom - pi) /
+				                        static_cast<double>(GB->num_chrom);
+
+				// Boltzmann component: normalised to [0, 1] by max weight.
+				double boltz_component = chrom[pi].boltzmann_weight / max_bw;
+
+				// Blended fitness divided by niche count.
+				double blended = (1.0 - w) * rank_component + w * boltz_component;
+				chrom[pi].fitnes = blended * static_cast<double>(GB->num_chrom) / pshare;
+			}
+
+			// Log ensemble thermodynamics periodically.
+			if (gen_id % 50 == 0) {
+				fprintf(stderr, "[SMFREE] gen=%d  F=%.3f  <E>=%.3f  S=%.6f  Cv=%.4f  σ_E=%.3f\n",
+				        gen_id, thermo.free_energy, thermo.mean_energy,
+				        thermo.entropy, thermo.heat_capacity, thermo.std_energy);
+			}
+		} else {
+			// Temperature = 0: fall back to rank-only (same as LINEAR).
+			for (i = 0; i < GB->num_chrom; i++) {
+				chrom[i].fitnes = static_cast<double>(GB->num_chrom - i);
+				chrom[i].boltzmann_weight = 0.0;
+				chrom[i].free_energy = 0.0;
+			}
+		}
+	}
+
 	if(print){
 
 		FILE* outfile_ptr = get_update_file_ptr(FA);
@@ -1324,11 +1546,10 @@ FILE* get_update_file_ptr(FA_Global* FA)
 	char UPDATEFILE[MAX_PATH__];
 	long long timeout = 0;
 
-	strcpy(UPDATEFILE,FA->state_path);
 #ifdef _WIN32
-	strcat(UPDATEFILE,"\\.update");
+	snprintf(UPDATEFILE,MAX_PATH__,"%s\\.update",FA->state_path);
 #else
-	strcat(UPDATEFILE,"/.update");
+	snprintf(UPDATEFILE,MAX_PATH__,"%s/.update",FA->state_path);
 #endif
 
 	outfile_ptr = fopen(UPDATEFILE,"r");
@@ -1468,6 +1689,30 @@ void populate_chromosomes(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* 
 		while(i<GB->num_chrom){
 			while(1){
 				generate_random_individual(FA,GB,atoms,chrom[i].genes,gene_lim,dice,0,GB->num_genes);
+
+				// ── MIF-weighted or RefLig seeding override for gene 0 ──
+				if (FA->reflig_nearest_count > 0 &&
+				    i < popoffset + static_cast<int>(FA->reflig_seed_fraction *
+				        static_cast<float>(GB->num_chrom - popoffset))) {
+					// RefLig seeding: distribute K nearest grid points across seeded fraction
+					int k = std::abs(chrom[i].genes[0].to_int32) % FA->reflig_nearest_count;
+					int grid_idx = FA->reflig_nearest_grid[k];
+					chrom[i].genes[0].to_ic = static_cast<double>(grid_idx);
+					chrom[i].genes[0].to_int32 = ictogene(&gene_lim[0],
+					                                       static_cast<double>(grid_idx));
+				} else if (FA->mif_enabled && FA->mif_cdf && FA->mif_count > 0) {
+					// MIF-weighted Boltzmann sampling
+					double u = RandomDouble(dice());
+					auto it = std::lower_bound(FA->mif_cdf,
+					                           FA->mif_cdf + FA->mif_count, u);
+					int idx = static_cast<int>(std::distance(FA->mif_cdf, it));
+					idx = std::clamp(idx, 0, FA->mif_count - 1);
+					int grid_idx = FA->mif_sorted[idx];
+					chrom[i].genes[0].to_ic = static_cast<double>(grid_idx);
+					chrom[i].genes[0].to_int32 = ictogene(&gene_lim[0],
+					                                       static_cast<double>(grid_idx));
+				}
+
 				sig = generate_sig(chrom[i].genes,GB->num_genes);
 				if(GB->duplicates || duplicates.find(sig) == duplicates.end()){
 					break;
@@ -1541,7 +1786,7 @@ void populate_chromosomes(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* 
 		std::vector<std::vector<atom>>   p_atoms(n_thr, std::vector<atom>(atoms, atoms + natm));
 		std::vector<std::vector<resid>>  p_res(n_thr, std::vector<resid>(residue, residue + nres));
 		std::vector<FA_Global>           p_fa(n_thr, *FA);
-		std::vector<std::vector<int>>    p_contacts(n_thr, std::vector<int>(100000, 0));
+		std::vector<std::vector<int>>    p_contacts(n_thr, std::vector<int>(MAX_ATOM_NUMBER, 0));
 		std::vector<std::vector<float>>  p_contrib(n_thr, std::vector<float>(nctb, 0.0f));
 		std::vector<std::vector<OptRes>> p_optres(n_thr,
 		    std::vector<OptRes>(FA->optres, FA->optres + nopt));
@@ -1578,10 +1823,52 @@ void populate_chromosomes(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* 
 
 		(void)range;  // suppress unused warning when _OPENMP not defined
 
+		// ── Dirty-tracking optimisation (same logic as main eval loop) ───
+		bool p_has_normal_modes = false;
+		for (int p = 0; p < FA->npar; ++p) {
+			if (FA->map_par[p].typ == 3) { p_has_normal_modes = true; break; }
+		}
+		std::vector<int> p_dirty_atm;
+		std::vector<int> p_dirty_res_idx;
+		if (!p_has_normal_modes) {
+			for (int r = 0; r < FA->nors; ++r)
+				for (int m = 0; m < FA->nmov[r]; ++m)
+					p_dirty_atm.push_back(FA->mov[r][m]);
+			for (int p = 0; p < FA->npar; ++p)
+				p_dirty_atm.push_back(FA->map_par[p].atm);
+			for (int p = 0; p < FA->npar; ++p) {
+				if (FA->map_par[p].typ == 2) {
+					int j = FA->map_par[p].atm;
+					int cat = atoms[j].rec[3];
+					while (cat != 0 && cat != FA->map_par[p].atm) {
+						p_dirty_atm.push_back(cat);
+						j = cat;
+						cat = atoms[j].rec[3];
+					}
+				}
+			}
+			std::sort(p_dirty_atm.begin(), p_dirty_atm.end());
+			p_dirty_atm.erase(std::unique(p_dirty_atm.begin(), p_dirty_atm.end()),
+			                   p_dirty_atm.end());
+			for (int p = 0; p < FA->npar; ++p) {
+				if (FA->map_par[p].typ == 4)
+					p_dirty_res_idx.push_back(atoms[FA->map_par[p].atm].ofres);
+			}
+			std::sort(p_dirty_res_idx.begin(), p_dirty_res_idx.end());
+			p_dirty_res_idx.erase(
+				std::unique(p_dirty_res_idx.begin(), p_dirty_res_idx.end()),
+				p_dirty_res_idx.end());
+		}
+		const bool p_use_selective = !p_has_normal_modes &&
+		    static_cast<int>(p_dirty_atm.size()) < natm / 2;
+		const int p_n_dirty_atm = static_cast<int>(p_dirty_atm.size());
+		const int p_n_dirty_res = static_cast<int>(p_dirty_res_idx.size());
+
 #ifdef _OPENMP
 #pragma omp parallel for schedule(dynamic) default(none) \
 	shared(chrom, FA, GB, VC, gene_lim, atoms, residue, cleftgrid, target, \
-	       popoffset, p_atoms, p_res, p_fa, p_optres, p_vc, natm, nres, nopt)
+	       popoffset, p_atoms, p_res, p_fa, p_optres, p_vc, natm, nres, nopt, \
+	       p_use_selective, p_dirty_atm, p_dirty_res_idx, p_n_dirty_atm, p_n_dirty_res)
 #endif
 		for(i=popoffset;i<GB->num_chrom;i++){
 #ifdef _OPENMP
@@ -1589,8 +1876,19 @@ void populate_chromosomes(FA_Global* FA,GB_Global* GB,VC_Global* VC,chromosome* 
 #else
 			const int tid = 0;
 #endif
-			std::copy(atoms,   atoms + natm,   p_atoms[tid].begin());
-			std::copy(residue, residue + nres, p_res[tid].begin());
+			if (p_use_selective) {
+				for (int d = 0; d < p_n_dirty_atm; ++d) {
+					const int ai = p_dirty_atm[d];
+					p_atoms[tid][ai] = atoms[ai];
+				}
+				for (int d = 0; d < p_n_dirty_res; ++d) {
+					const int ri = p_dirty_res_idx[d];
+					p_res[tid][ri] = residue[ri];
+				}
+			} else {
+				std::copy(atoms,   atoms + natm,   p_atoms[tid].begin());
+				std::copy(residue, residue + nres, p_res[tid].begin());
+			}
 			for (int o = 0; o < nopt; ++o) {
 				p_optres[tid][o].cf.com    = 0.0;
 				p_optres[tid][o].cf.wal    = 0.0;
@@ -1763,7 +2061,19 @@ void read_gainputs(FA_Global* FA,GB_Global* GB,int* gen_int,int* sz_part,char fi
 	char buffer[MAX_PATH__];         /* a line from the INPUT file */
 	char field[9];           /* field names on INPUT file */
 
+	// Direct mode: GA params already set by apply_config — skip file reading
+	if(file[0] == '\0'){
+		printf("read_gainputs: using pre-configured GA parameters (direct mode)\n");
+		return;
+	}
+
 	//printf("file here is <%s>\n",file);
+	// In direct mode (no .ga.inp file), all GA params are set via
+	// apply_config().  Skip file parsing when the path is empty.
+	if (file[0] == '\0') {
+		printf("read_gainputs: no GA input file — using config defaults\n");
+		return;
+	}
 	infile_ptr=NULL;
 	if(!OpenFile_B(file,"r",&infile_ptr)){
 		fprintf(stderr,"ERROR: Cannot find file '%s'.\n", file);
@@ -1771,11 +2081,11 @@ void read_gainputs(FA_Global* FA,GB_Global* GB,int* gen_int,int* sz_part,char fi
 	}
 
 	while (fgets(buffer, sizeof(buffer),infile_ptr)){
-
-		if (buffer[strlen(buffer)-1] == '\n')
-			buffer[strlen(buffer)-1] = '\0';
-		if (buffer[strlen(buffer)-1] == '\r')
-			buffer[strlen(buffer)-1] = '\0';
+		size_t blen = strlen(buffer);
+		if (blen > 0 && buffer[blen-1] == '\n')
+			buffer[--blen] = '\0';
+		if (blen > 0 && buffer[blen-1] == '\r')
+			buffer[--blen] = '\0';
 
 
 		if(strncmp(buffer,"NUMCHROM",8) == 0){
@@ -1801,17 +2111,18 @@ void read_gainputs(FA_Global* FA,GB_Global* GB,int* gen_int,int* sz_part,char fi
 		}else if(strncmp(buffer,"ENDMPROB",8) == 0){
 			sscanf(buffer,"%s %lf",field,&GB->end_mut_prob);
 		}else if(strncmp(buffer,"POPINIMT",8) == 0){
-			sscanf(buffer,"%s %s",field,GB->pop_init_method);
+			sscanf(buffer,"%s %8s",field,GB->pop_init_method);
 			//0         1         2
 			//012345678901234567890123456789
 			//POPINIMT IPFILE file.dat
-			if(strcmp(GB->pop_init_method,"IPFILE") == 0){
-				strcpy(GB->pop_init_file,&buffer[16]);
+			if(strcmp(GB->pop_init_method,"IPFILE") == 0 && blen > 16){
+				strncpy(GB->pop_init_file,&buffer[16],MAX_PATH__-1);
+				GB->pop_init_file[MAX_PATH__-1]='\0';
 			}
 		}else if(strncmp(buffer,"FITMODEL",8) == 0){
-			sscanf(buffer,"%s %s",field,GB->fitness_model);
+			sscanf(buffer,"%s %8s",field,GB->fitness_model);
 		}else if(strncmp(buffer,"REPMODEL",8) == 0){
-			sscanf(buffer,"%s %s",field,GB->rep_model);
+			sscanf(buffer,"%s %8s",field,GB->rep_model);
 		}else if(strncmp(buffer,"DUPLICAT",8) == 0){
 			GB->duplicates = 1;
 		}else if(strncmp(buffer,"BOOMFRAC",8) == 0){
@@ -1834,6 +2145,32 @@ void read_gainputs(FA_Global* FA,GB_Global* GB,int* gen_int,int* sz_part,char fi
 			sscanf(buffer,"%s %d",field,&GB->print_int);
 		}else if(strncmp(buffer,"PRINTRRG",8) == 0){
 			sscanf(buffer,"%s %d",field,&GB->rrg_skip);
+		}else if(strncmp(buffer,"ENTRCNVG",8) == 0){
+			sscanf(buffer,"%s %d",field,&GB->entropy_convergence);
+		}else if(strncmp(buffer,"ENTRCHKI",8) == 0){
+			sscanf(buffer,"%s %d",field,&GB->entropy_check_interval);
+		}else if(strncmp(buffer,"ENTRWIND",8) == 0){
+			sscanf(buffer,"%s %d",field,&GB->entropy_window);
+		}else if(strncmp(buffer,"ENTRTHRS",8) == 0){
+			sscanf(buffer,"%s %lf",field,&GB->entropy_rel_threshold);
+		}else if(strncmp(buffer,"MIFWEIGH",8) == 0){
+			sscanf(buffer,"%*s %d", &FA->mif_enabled);
+		}else if(strncmp(buffer,"MIFTEMPR",8) == 0){
+			sscanf(buffer,"%*s %f", &FA->mif_temperature);
+		}else if(strncmp(buffer,"GRIDPRIO",8) == 0){
+			sscanf(buffer,"%*s %f", &FA->grid_prio_percent);
+		}else if(strncmp(buffer,"REFLGFIL",8) == 0){
+			sscanf(buffer,"%*s %s", FA->reflig_file);
+		}else if(strncmp(buffer,"REFLGSED",8) == 0){
+			sscanf(buffer,"%*s %f", &FA->reflig_seed_fraction);
+		}else if(strncmp(buffer,"REFLGKNN",8) == 0){
+			sscanf(buffer,"%*s %d", &FA->reflig_k_nearest);
+		}else if(strncmp(buffer,"REFLGHTM",8) == 0){
+			sscanf(buffer,"%*s %d", &FA->reflig_hetatm_fallback);
+		}else if(strncmp(buffer,"AUTOFLXE",8) == 0){
+			sscanf(buffer,"%*s %d", &FA->autoflex_enabled);
+		}else if(strncmp(buffer,"AUTOFLXN",8) == 0){
+			sscanf(buffer,"%*s %d", &FA->autoflex_max);
 		}else{
 			// ...
 		}
@@ -2088,7 +2425,7 @@ void QuickSort(chromosome* list, int beg, int end, bool energy)
             while ( (l<=r) && ( ( energy && QS_ASC(list[l].evalue,piv) <= 0 ) ||
 								( !energy && QS_DSC(list[l].fitnes,piv) <= 0 ) ) ) l++;
             while ( (l<=r) && ( ( energy && QS_ASC(list[r].evalue,piv) > 0 ) ||
-								( !energy && QS_DSC(list[r].fitnes,piv) ) ) ) r--;
+								( !energy && QS_DSC(list[r].fitnes,piv) > 0 ) ) ) r--;
 
             if (l>r) break;
 
@@ -2341,5 +2678,8 @@ double RandomDouble(int32_t gene){
 }
 
 double RandomDouble(){
-	return rand()/((double)RAND_MAX+1.0);
+	// Thread-safe RNG (replaces non-reentrant rand())
+	thread_local std::mt19937 tl_rng(std::random_device{}());
+	std::uniform_real_distribution<double> dist(0.0, 1.0);
+	return dist(tl_rng);
 }
