@@ -9,7 +9,7 @@ on:
       - 'site/**'
       - 'scripts/update_site_stats.py'
   schedule:
-    - cron: '0 6 * * 1'    # Weekly Monday 06:00 UTC
+    - cron: '0 6 * * *'    # Daily 06:00 UTC
   workflow_dispatch:
 
 concurrency:
