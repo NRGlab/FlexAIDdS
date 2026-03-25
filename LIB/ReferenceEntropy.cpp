@@ -8,6 +8,15 @@
 #include <limits>
 #include <cmath>
 #include <cstdio>
+#include <span>
+
+#ifdef FLEXAIDS_HAS_EIGEN
+#include <Eigen/Dense>
+#endif
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace reference_entropy {
 
@@ -27,9 +36,31 @@ ReceptorEntropyResult compute_receptor_entropy(
     }
 
     // Compute Boltzmann weights from model energies
-    double beta = 1.0 / (kB_kcal * temperature_K);
+    // Eigen-accelerated path: vectorized exp/log operations
+    const double beta = 1.0 / (kB_kcal * temperature_K);
 
-    // log-sum-exp for numerical stability
+#ifdef FLEXAIDS_HAS_EIGEN
+    // Eigen vectorized: all exp/log/sum operations auto-vectorize to AVX/SSE
+    Eigen::Map<const Eigen::ArrayXd> E(model_energies.data(), r.n_models);
+    const double e_min = E.minCoeff();
+    const double e_max = E.maxCoeff();
+    r.energy_spread = e_max - e_min;
+
+    // Shifted exponents for log-sum-exp stability
+    Eigen::ArrayXd shifted = -beta * (E - e_min);
+    const double max_s = shifted.maxCoeff();
+    const double log_Z = max_s + std::log((shifted - max_s).exp().sum());
+
+    // Boltzmann probabilities and Shannon entropy (vectorized)
+    Eigen::ArrayXd log_pi = shifted - log_Z;
+    Eigen::ArrayXd pi = log_pi.exp();
+    // H = -sum(p_i * log(p_i)), mask zeros
+    Eigen::ArrayXd safe_log = (pi > 1e-15).select(log_pi, Eigen::ArrayXd::Zero(r.n_models));
+    Eigen::ArrayXd safe_pi  = (pi > 1e-15).select(pi, Eigen::ArrayXd::Zero(r.n_models));
+    double H = -(safe_pi * safe_log).sum();
+
+#else
+    // Scalar fallback with manual log-sum-exp
     double e_min = *std::min_element(model_energies.begin(), model_energies.end());
     double e_max = *std::max_element(model_energies.begin(), model_energies.end());
     r.energy_spread = e_max - e_min;
@@ -39,7 +70,6 @@ ReceptorEntropyResult compute_receptor_entropy(
         std::vector<double> shifted(r.n_models);
         for (int i = 0; i < r.n_models; i++)
             shifted[i] = -beta * (model_energies[i] - e_min);
-
         double max_s = *std::max_element(shifted.begin(), shifted.end());
         double sum = 0.0;
         for (double s : shifted)
@@ -47,14 +77,14 @@ ReceptorEntropyResult compute_receptor_entropy(
         log_Z = max_s + std::log(sum);
     }
 
-    // Boltzmann probabilities and Shannon entropy
-    double H = 0.0; // Shannon entropy in nats
+    double H = 0.0;
     for (int i = 0; i < r.n_models; i++) {
         double log_pi = -beta * (model_energies[i] - e_min) - log_Z;
         double pi = std::exp(log_pi);
         if (pi > 1e-15)
             H -= pi * log_pi;
     }
+#endif
 
     // Convert from nats to kcal/mol·K via: S = kB * H
     r.S_conf = kB_kcal * H;

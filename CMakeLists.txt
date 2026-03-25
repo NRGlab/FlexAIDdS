@@ -276,6 +276,7 @@ target_sources(FlexAID PRIVATE
         LIB/CifReader.cpp
         LIB/LibrarySplitter.cpp
         LIB/ReferenceEntropy.cpp
+        LIB/ParallelCampaign.cpp
         # ── v1.5 thermodynamic + hardware acceleration modules ──
         LIB/hardware_detect.cpp
         LIB/hardware_dispatch.cpp
