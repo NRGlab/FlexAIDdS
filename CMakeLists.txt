@@ -262,6 +262,16 @@ target_sources(FlexAID PRIVATE
         LIB/encom.cpp             # ← NEW: ENCoM vibrational entropy
         # ── TurboQuant vector quantization (Zandieh et al. 2025) ──
         LIB/TurboQuant.cpp
+        # ── ProcessLigand (Phase 3: standalone ligand preprocessing) ──
+        LIB/ProcessLigand/ProcessLigand.cpp
+        LIB/ProcessLigand/SmilesParser.cpp
+        LIB/ProcessLigand/RingPerception.cpp
+        LIB/ProcessLigand/Aromaticity.cpp
+        LIB/ProcessLigand/RotatableBonds.cpp
+        LIB/ProcessLigand/ValenceChecker.cpp
+        LIB/ProcessLigand/SybylTyper.cpp
+        LIB/ProcessLigand/FlexAIDWriter.cpp
+        LIB/ProcessLigand/ROCmDispatch.cpp
         # ── v1.5 thermodynamic + hardware acceleration modules ──
         LIB/hardware_detect.cpp
         LIB/hardware_dispatch.cpp

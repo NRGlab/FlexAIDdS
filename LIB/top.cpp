@@ -7,26 +7,97 @@
 #include "SdfReader.h"
 #include "CleftDetector.h"
 #include "statmech.h"
+#include "ProcessLigand/ProcessLigand.h"
 
 #include <cstring>
 #include <string>
 #include <vector>
+#include <filesystem>
+
+// ── Idiotproof file role detection ──────────────────────────────────────────
+// Returns: "receptor", "ligand", "config", "smiles", or "unknown"
+static std::string detect_file_role(const std::string& path) {
+	// Not a file? Might be a SMILES string
+	if (!std::filesystem::exists(path)) {
+		// SMILES strings contain typical chemistry chars, no path separators
+		if (!path.empty() &&
+		    path.find('/') == std::string::npos &&
+		    path.find('\\') == std::string::npos &&
+		    (path.find('(') != std::string::npos ||
+		     path.find('=') != std::string::npos ||
+		     path.find('#') != std::string::npos ||
+		     path.find('c') != std::string::npos ||
+		     path.find('C') != std::string::npos ||
+		     path.find('N') != std::string::npos ||
+		     path.find('O') != std::string::npos)) {
+			return "smiles";
+		}
+		return "unknown";
+	}
+
+	std::string ext;
+	{
+		auto dot = path.rfind('.');
+		if (dot != std::string::npos) {
+			ext = path.substr(dot);
+			for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		}
+	}
+
+	// Ligand formats
+	if (ext == ".mol2" || ext == ".sdf" || ext == ".mol") return "ligand";
+
+	// Config formats
+	if (ext == ".json") return "config";
+
+	// PDB could be receptor or ligand — peek at content
+	if (ext == ".pdb" || ext == ".ent") {
+		FILE* fp = fopen(path.c_str(), "r");
+		if (!fp) return "unknown";
+		int atom_count = 0;
+		int hetatm_count = 0;
+		char line[256];
+		while (fgets(line, sizeof(line), fp) && (atom_count + hetatm_count) < 200) {
+			if (strncmp(line, "ATOM  ", 6) == 0) atom_count++;
+			else if (strncmp(line, "HETATM", 6) == 0) hetatm_count++;
+		}
+		fclose(fp);
+		// Receptor: many ATOM records. Ligand PDB: mostly HETATM, few atoms.
+		if (atom_count > 20) return "receptor";
+		if (hetatm_count > 0 && atom_count <= 20) return "ligand";
+		if (atom_count > 0) return "receptor"; // fallback
+		return "unknown";
+	}
+
+	// Legacy input files
+	if (ext == ".inp" || ext == ".dat") return "legacy";
+
+	return "unknown";
+}
 
 static void print_usage(const char* progname) {
 	printf("FlexAIDdS — Entropy-driven molecular docking\n\n");
 	printf("Usage:\n");
-	printf("  %s <receptor.pdb> <ligand.mol2> [options]\n", progname);
+	printf("  %s <receptor> <ligand> [options]\n\n", progname);
+	printf("  Files can be in any order. FlexAIDdS auto-detects which is\n");
+	printf("  the receptor and which is the ligand from file content.\n\n");
+	printf("  Receptor: .pdb (protein/nucleic acid with ATOM records)\n");
+	printf("  Ligand:   .mol2, .sdf, .mol, .pdb (small molecule)\n");
+	printf("            or a SMILES string directly on the command line\n\n");
 	printf("  %s --legacy <config.inp> <ga.inp> <output_prefix>\n\n", progname);
 	printf("Options:\n");
-	printf("  -c, --config <file.json>   JSON config file (overrides defaults)\n");
-	printf("  -o, --output <prefix>      Output file prefix (default: flexaid_out)\n");
-	printf("  --rigid                    Disable all flexibility (fast screening)\n");
-	printf("  --folded                   Assume receptor is fully folded (skip NATURaL chain growth)\n");
+	printf("  -c, --config <file.json>   JSON config (overrides defaults)\n");
+	printf("  -o, --output <prefix>      Output prefix (default: flexaid_out)\n");
+	printf("  --rigid                    Fast rigid-body screening\n");
+	printf("  --folded                   Skip NATURaL chain growth\n");
 	printf("  --legacy                   Legacy 3-file input mode\n");
 	printf("  -h, --help                 Show this help\n\n");
-	printf("Full flexibility is enabled by default (T=300K, ligand torsions,\n");
-	printf("intramolecular scoring, Voronoi contacts). Use -c to override any\n");
-	printf("parameter via JSON. Use --rigid for fast rigid-body screening.\n");
+	printf("Examples:\n");
+	printf("  %s receptor.pdb ligand.mol2\n", progname);
+	printf("  %s ligand.sdf receptor.pdb          # order doesn't matter\n", progname);
+	printf("  %s receptor.pdb 'c1ccccc1' --rigid  # SMILES input\n", progname);
+	printf("  %s protein.pdb drug.sdf -c config.json -o results\n\n", progname);
+	printf("Defaults: T=300K, full flexibility, Voronoi contacts, intramolecular ON.\n");
 }
 
 int main(int argc, char **argv){
@@ -246,7 +317,11 @@ int main(int argc, char **argv){
 		}
 	}
 
-	// Check for --legacy mode
+	// ── Idiotproof argument parsing ──────────────────────────────────────────
+	// Accepts files in any order. Auto-detects receptor vs ligand.
+	// Handles: PDB receptor, MOL2/SDF/PDB ligand, SMILES, JSON config.
+
+	// Check for --legacy mode first
 	if (strcmp(argv[1], "--legacy") == 0) {
 		if (argc < 5) {
 			fprintf(stderr, "ERROR: --legacy requires 3 arguments: <config.inp> <ga.inp> <output_prefix>\n");
@@ -258,86 +333,135 @@ int main(int argc, char **argv){
 		strncpy(end_strfile, argv[4], MAX_PATH__-1); end_strfile[MAX_PATH__-1]='\0';
 		strncpy(FA->rrgfile, end_strfile, MAX_PATH__-1); FA->rrgfile[MAX_PATH__-1]='\0';
 	}
-	// Legacy auto-detect: if exactly 3 positional args and first does not end in .pdb
-	else if (argc == 4 && strstr(argv[1], ".pdb") == NULL && strstr(argv[1], ".PDB") == NULL) {
-		legacy_mode = true;
-		strncpy(dockinp, argv[1], MAX_PATH__-1); dockinp[MAX_PATH__-1]='\0';
-		strncpy(gainp, argv[2], MAX_PATH__-1); gainp[MAX_PATH__-1]='\0';
-		strncpy(end_strfile, argv[3], MAX_PATH__-1); end_strfile[MAX_PATH__-1]='\0';
-		strncpy(FA->rrgfile, end_strfile, MAX_PATH__-1); FA->rrgfile[MAX_PATH__-1]='\0';
-	}
 	else {
-		// ── New mode: receptor ligand [options] ──
-		if (argc < 3) {
-			fprintf(stderr, "ERROR: New mode requires at least: <receptor.pdb> <ligand.mol2>\n");
-			print_usage(argv[0]);
-			Terminate(1);
-		}
+		// ── Auto-detect mode: scan ALL arguments, classify each ──
+		std::string receptor_path;
+		std::string ligand_path;
+		std::vector<std::string> legacy_files;
 
-		// Parse optional flags
-		for (int a = 3; a < argc; a++) {
-			if ((strcmp(argv[a], "-c") == 0 || strcmp(argv[a], "--config") == 0) && a + 1 < argc) {
-				config_path = argv[++a];
-			} else if ((strcmp(argv[a], "-o") == 0 || strcmp(argv[a], "--output") == 0) && a + 1 < argc) {
-				output_prefix = argv[++a];
-			} else if (strcmp(argv[a], "--rigid") == 0) {
-				use_rigid = true;
-			} else if (strcmp(argv[a], "--folded") == 0) {
-				use_folded = true;
+		for (int a = 1; a < argc; a++) {
+			std::string arg(argv[a]);
+
+			// Skip flags and their values
+			if (arg == "-c" || arg == "--config") {
+				if (a + 1 < argc) config_path = argv[++a];
+				continue;
+			}
+			if (arg == "-o" || arg == "--output") {
+				if (a + 1 < argc) output_prefix = argv[++a];
+				continue;
+			}
+			if (arg == "--rigid")  { use_rigid = true;  continue; }
+			if (arg == "--folded") { use_folded = true; continue; }
+			if (arg == "-h" || arg == "--help") { print_usage(argv[0]); Terminate(0); }
+
+			// Classify this positional argument
+			std::string role = detect_file_role(arg);
+
+			if (role == "receptor") {
+				if (receptor_path.empty()) {
+					receptor_path = arg;
+				} else {
+					fprintf(stderr, "WARNING: Multiple receptor files detected.\n");
+					fprintf(stderr, "  Using: %s\n  Ignoring: %s\n",
+					        receptor_path.c_str(), arg.c_str());
+				}
+			} else if (role == "ligand" || role == "smiles") {
+				if (ligand_path.empty()) {
+					ligand_path = arg;
+				} else {
+					fprintf(stderr, "WARNING: Multiple ligand inputs detected.\n");
+					fprintf(stderr, "  Using: %s\n  Ignoring: %s\n",
+					        ligand_path.c_str(), arg.c_str());
+				}
+			} else if (role == "config") {
+				config_path = arg;
+			} else if (role == "legacy") {
+				legacy_files.push_back(arg);
 			} else {
-				fprintf(stderr, "WARNING: Unknown option '%s' — ignoring.\n", argv[a]);
+				// Unknown file — try to be helpful
+				if (std::filesystem::exists(arg)) {
+					fprintf(stderr, "WARNING: Cannot determine role of '%s'.\n", arg.c_str());
+					fprintf(stderr, "  Supported: .pdb (receptor), .mol2/.sdf/.mol (ligand), .json (config)\n");
+				} else {
+					fprintf(stderr, "ERROR: File not found and not valid SMILES: '%s'\n", arg.c_str());
+					print_usage(argv[0]);
+					Terminate(1);
+				}
 			}
 		}
 
-		// Load JSON config: defaults → user overrides → rigid/folded overrides
-		json::Value config = load_config(config_path);
-		if (use_rigid) {
-			config = json::merge(config, flexaid_rigid_overrides());
+		// Legacy auto-detect: if we got legacy .inp files instead of PDB/MOL2
+		if (!legacy_files.empty() && receptor_path.empty() && ligand_path.empty()) {
+			if (legacy_files.size() >= 2) {
+				legacy_mode = true;
+				strncpy(dockinp, legacy_files[0].c_str(), MAX_PATH__-1); dockinp[MAX_PATH__-1]='\0';
+				strncpy(gainp, legacy_files[1].c_str(), MAX_PATH__-1); gainp[MAX_PATH__-1]='\0';
+				if (legacy_files.size() >= 3) {
+					strncpy(end_strfile, legacy_files[2].c_str(), MAX_PATH__-1);
+				} else {
+					strncpy(end_strfile, output_prefix.c_str(), MAX_PATH__-1);
+				}
+				end_strfile[MAX_PATH__-1]='\0';
+				strncpy(FA->rrgfile, end_strfile, MAX_PATH__-1); FA->rrgfile[MAX_PATH__-1]='\0';
+			} else {
+				fprintf(stderr, "ERROR: Legacy mode requires at least 2 .inp files.\n");
+				print_usage(argv[0]);
+				Terminate(1);
+			}
 		}
-		if (use_folded) {
-			using V = json::Value;
-			using O = json::Object;
-			config = json::merge(config, V(O{{"advanced", V(O{{"assume_folded", V(true)}})}}));
+
+		// Validate we have what we need for direct mode
+		if (!legacy_mode) {
+			if (receptor_path.empty()) {
+				fprintf(stderr, "ERROR: No receptor file detected.\n");
+				fprintf(stderr, "  Provide a .pdb file containing a protein or nucleic acid.\n\n");
+				print_usage(argv[0]);
+				Terminate(1);
+			}
+			if (ligand_path.empty()) {
+				fprintf(stderr, "ERROR: No ligand input detected.\n");
+				fprintf(stderr, "  Provide a .mol2, .sdf, .mol, or .pdb ligand file,\n");
+				fprintf(stderr, "  or pass a SMILES string directly.\n\n");
+				print_usage(argv[0]);
+				Terminate(1);
+			}
+
+			printf("Receptor: %s\n", receptor_path.c_str());
+			printf("Ligand:   %s\n", ligand_path.c_str());
 		}
 
-		// Apply config to FA/GB structs
-		apply_config(config, FA, GB);
+		// ── Apply config ──
+		if (!legacy_mode) {
+			json::Value config = load_config(config_path);
+			if (use_rigid) config = json::merge(config, flexaid_rigid_overrides());
+			if (use_folded) {
+				using V = json::Value;
+				using O = json::Object;
+				config = json::merge(config, V(O{{"advanced", V(O{{"assume_folded", V(true)}})}}));
+			}
+			apply_config(config, FA, GB);
 
-		printf("FlexAIDdS config: T=%uK, ligand_flex=%s, intramolecular=%s, scoring=%s\n",
-			FA->temperature,
-			FA->deelig_flex ? "ON" : "OFF",
-			FA->intramolecular ? "ON" : "OFF",
-			FA->complf);
+			printf("FlexAIDdS config: T=%uK, ligand_flex=%s, intramolecular=%s, scoring=%s\n",
+				FA->temperature,
+				FA->deelig_flex ? "ON" : "OFF",
+				FA->intramolecular ? "ON" : "OFF",
+				FA->complf);
+		}
 
-		// For now, the new mode sets the config values but still requires
-		// the legacy input files to be generated or provided.
-		// TODO: Direct PDB/MOL2 loading without .inp files.
-		//   Requires: auto-generate grid from cleft detection, load default
-		//   energy matrix + atom type definitions, build rotamer library,
-		//   and call read_pdb/read_mol2_ligand directly. See read_input()
-		//   for the full list of initialisation steps that must be replicated.
-		fprintf(stderr, "NOTE: Direct receptor/ligand mode is prepared (config applied).\n");
-		fprintf(stderr, "Input pipeline integration in progress. Use --legacy for full runs.\n");
-		fprintf(stderr, "Config loaded: %s\n", config_path.empty() ? "(defaults)" : config_path.c_str());
-
-		const char* receptor_path = argv[1];
-		const char* ligand_path   = argv[2];
 
 		// Set output prefix
 		strncpy(end_strfile, output_prefix.c_str(), MAX_PATH__ - 1);
 		end_strfile[MAX_PATH__ - 1] = '\0';
 		strncpy(FA->rrgfile, end_strfile, MAX_PATH__-1); FA->rrgfile[MAX_PATH__-1]='\0';
 
-		// GA input file not used in direct mode — config already applied
+		// GA input not used in direct mode
 		dockinp[0] = '\0';
 		gainp[0] = '\0';
 
-		// ── Direct PDB/MOL2 loading pipeline ──────────────────────────
-		char* receptor_file = argv[1];
-		char* ligand_file   = argv[2];
-
-		printf("Direct loading mode: receptor=%s, ligand=%s\n",
-		       receptor_file, ligand_file);
+		// Direct loading pipeline — use auto-detected paths
+		const char* receptor_file = receptor_path.c_str();
+		const char* ligand_file   = ligand_path.c_str();
 
 		// ── 1. Interaction matrix ──
 		{
@@ -357,7 +481,7 @@ int main(int argc, char **argv){
 		}
 
 		// ── 2. Check if target is RNA ──
-		if (rna_structure(receptor_file)) {
+		if (rna_structure(const_cast<char*>(receptor_file))) {
 			printf("target molecule is a RNA structure\n");
 			FA->is_protein = 0;
 		}
@@ -405,7 +529,7 @@ int main(int argc, char **argv){
 				strcat(tmpprotname, random_str);
 			}
 
-			modify_pdb(receptor_file, tmpprotname, FA->exclude_het, FA->remove_water, FA->is_protein,
+			modify_pdb(const_cast<char*>(receptor_file), tmpprotname, FA->exclude_het, FA->remove_water, FA->is_protein,
 			           FA->keep_ions, FA->keep_structural_waters, FA->structural_water_bfactor_max);
 			read_pdb(FA, &atoms, &residue, tmpprotname);
 			remove(tmpprotname);
@@ -423,25 +547,112 @@ int main(int argc, char **argv){
 		}
 		assign_types(FA, atoms, residue, deftyp);
 
-		// ── 5. Read ligand (MOL2 or SDF) ──
+		// ── 5. Read ligand (auto-detect: SMILES / SDF / MOL2 / PDB) ──
+		// ProcessLigand handles format detection, validation, ring
+		// perception, aromaticity, SYBYL typing, and failsafe fallback.
 		{
-			const char* ext = strrchr(ligand_file, '.');
 			int lig_ok = 0;
-			bool is_sdf = false;
-			if (ext) {
-				is_sdf = (strcmp(ext, ".sdf") == 0 || strcmp(ext, ".SDF") == 0 ||
-				          strcmp(ext, ".mol") == 0 || strcmp(ext, ".MOL") == 0);
+			std::string lig_input(ligand_file);
+
+			// Auto-detect: is this a file path or a SMILES string?
+			bool is_file = std::filesystem::exists(lig_input);
+			bool is_smiles = false;
+
+			if (!is_file) {
+				// Not a file — treat as SMILES string if it contains
+				// typical SMILES characters and no whitespace/path separators
+				bool has_path_chars = (lig_input.find('/') != std::string::npos ||
+				                      lig_input.find('\\') != std::string::npos);
+				if (!has_path_chars && !lig_input.empty()) {
+					is_smiles = true;
+					printf("Ligand input detected as SMILES: %s\n", ligand_file);
+				} else {
+					fprintf(stderr, "ERROR: Ligand file not found: %s\n", ligand_file);
+					Terminate(2);
+				}
 			}
-			if (is_sdf) {
-				printf("read ligand SDF <%s>\n", ligand_file);
-				lig_ok = read_sdf_ligand(FA, &atoms, &residue, ligand_file);
+
+			if (is_smiles) {
+				// SMILES → ProcessLigand pipeline → BonMol
+				// Note: SMILES provides topology only (no 3D coords).
+				// ProcessLigand validates, perceives rings, assigns types.
+				// For docking, 3D coordinates are required — user should
+				// provide SDF/MOL2 with coords, or use external conformer
+				// generation (RDKit Python, OpenBabel) first.
+				bonmol::ProcessOptions opts;
+				opts.input  = lig_input;
+				opts.format = bonmol::InputFormat::SMILES;
+
+				bonmol::ProcessLigand pl;
+				auto result = pl.run(opts);
+
+				if (!result.success) {
+					fprintf(stderr, "ERROR: ProcessLigand failed for SMILES '%s': %s\n",
+					        ligand_file, result.error.c_str());
+					Terminate(2);
+				}
+
+				// Check if 3D coordinates are available
+				if (result.mol.num_atoms() > 0 && result.mol.coords.cols() > 0) {
+					// Write temporary SDF and read it back through the standard path
+					char tmp_sdf[MAX_PATH__];
+					snprintf(tmp_sdf, MAX_PATH__, "/tmp/flexaid_lig_%d.sdf",
+					         rand() % 900000 + 100000);
+					// TODO: BonMol::write_sdf(tmp_sdf) when 3D conformer gen is added
+					fprintf(stderr, "WARNING: SMILES input has no 3D coordinates.\n");
+					fprintf(stderr, "         Generate conformers first (e.g. RDKit Python)\n");
+					fprintf(stderr, "         then provide an SDF or MOL2 file.\n");
+					Terminate(2);
+				} else {
+					fprintf(stderr, "ERROR: SMILES input requires 3D coordinates for docking.\n");
+					fprintf(stderr, "       Provide an SDF or MOL2 file with 3D coords instead.\n");
+					Terminate(2);
+				}
 			} else {
-				printf("read ligand MOL2 <%s>\n", ligand_file);
-				lig_ok = read_mol2_ligand(FA, &atoms, &residue, ligand_file);
-			}
-			if (!lig_ok) {
-				fprintf(stderr, "ERROR: Failed to read ligand file: %s\n", ligand_file);
-				Terminate(2);
+				// File input — detect format from extension
+				const char* ext = strrchr(ligand_file, '.');
+				bool is_sdf = false;
+				if (ext) {
+					is_sdf = (strcmp(ext, ".sdf") == 0 || strcmp(ext, ".SDF") == 0 ||
+					          strcmp(ext, ".mol") == 0 || strcmp(ext, ".MOL") == 0);
+				}
+
+				// Run ProcessLigand for validation + typing enrichment
+				// (failsafe: if ProcessLigand fails, fall back to raw readers)
+				bonmol::ProcessOptions opts;
+				opts.input  = lig_input;
+				opts.format = is_sdf ? bonmol::InputFormat::SDF
+				                     : bonmol::InputFormat::MOL2;
+
+				bonmol::ProcessLigand pl;
+				auto result = pl.run(opts);
+
+				if (result.success) {
+					printf("ProcessLigand: %d atoms, %d rings (%d aromatic), "
+					       "%d rotatable bonds, MW=%.1f\n",
+					       result.num_heavy_atoms, result.num_rings,
+					       result.num_arom_rings, result.num_rot_bonds,
+					       result.molecular_weight);
+				} else {
+					printf("ProcessLigand info: %s (continuing with raw reader)\n",
+					       result.error.c_str());
+				}
+
+				// Always use the existing readers for FlexAID atom/resid population
+				// (ProcessLigand enrichment is diagnostic; the readers do the
+				// actual struct population that gaboom.cpp expects)
+				if (is_sdf) {
+					printf("read ligand SDF <%s>\n", ligand_file);
+					lig_ok = read_sdf_ligand(FA, &atoms, &residue, ligand_file);
+				} else {
+					printf("read ligand MOL2 <%s>\n", ligand_file);
+					lig_ok = read_mol2_ligand(FA, &atoms, &residue, ligand_file);
+				}
+
+				if (!lig_ok) {
+					fprintf(stderr, "ERROR: Failed to read ligand file: %s\n", ligand_file);
+					Terminate(2);
+				}
 			}
 		}
 
