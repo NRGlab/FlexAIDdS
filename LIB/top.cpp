@@ -5,9 +5,11 @@
 #include "config_defaults.h"
 #include "Mol2Reader.h"
 #include "SdfReader.h"
+#include "CifReader.h"
 #include "CleftDetector.h"
 #include "statmech.h"
 #include "ProcessLigand/ProcessLigand.h"
+#include "ProcessLigand/CoordBuilder.h"
 
 #include <cstring>
 #include <string>
@@ -50,6 +52,9 @@ static std::string detect_file_role(const std::string& path) {
 	// Config formats
 	if (ext == ".json") return "config";
 
+	// CIF/mmCIF — always receptor (PDB archive format)
+	if (ext == ".cif" || ext == ".mmcif") return "receptor";
+
 	// PDB could be receptor or ligand — peek at content
 	if (ext == ".pdb" || ext == ".ent") {
 		FILE* fp = fopen(path.c_str(), "r");
@@ -81,7 +86,7 @@ static void print_usage(const char* progname) {
 	printf("  %s <receptor> <ligand> [options]\n\n", progname);
 	printf("  Files can be in any order. FlexAIDdS auto-detects which is\n");
 	printf("  the receptor and which is the ligand from file content.\n\n");
-	printf("  Receptor: .pdb (protein/nucleic acid with ATOM records)\n");
+	printf("  Receptor: .pdb, .cif, .mmcif (protein/nucleic acid)\n");
 	printf("  Ligand:   .mol2, .sdf, .mol, .pdb (small molecule)\n");
 	printf("            or a SMILES string directly on the command line\n\n");
 	printf("  %s --legacy <config.inp> <ga.inp> <output_prefix>\n\n", progname);
@@ -382,7 +387,7 @@ int main(int argc, char **argv){
 				// Unknown file — try to be helpful
 				if (std::filesystem::exists(arg)) {
 					fprintf(stderr, "WARNING: Cannot determine role of '%s'.\n", arg.c_str());
-					fprintf(stderr, "  Supported: .pdb (receptor), .mol2/.sdf/.mol (ligand), .json (config)\n");
+					fprintf(stderr, "  Supported: .pdb/.cif/.mmcif (receptor), .mol2/.sdf/.mol (ligand), .json (config)\n");
 				} else {
 					fprintf(stderr, "ERROR: File not found and not valid SMILES: '%s'\n", arg.c_str());
 					print_usage(argv[0]);
@@ -415,7 +420,7 @@ int main(int argc, char **argv){
 		if (!legacy_mode) {
 			if (receptor_path.empty()) {
 				fprintf(stderr, "ERROR: No receptor file detected.\n");
-				fprintf(stderr, "  Provide a .pdb file containing a protein or nucleic acid.\n\n");
+				fprintf(stderr, "  Provide a .pdb or .cif file containing a protein or nucleic acid.\n\n");
 				print_usage(argv[0]);
 				Terminate(1);
 			}
@@ -592,20 +597,118 @@ int main(int argc, char **argv){
 					Terminate(2);
 				}
 
-				// Check if 3D coordinates are available
-				if (result.mol.num_atoms() > 0 && result.mol.coords.cols() > 0) {
-					// Write temporary SDF and read it back through the standard path
-					char tmp_sdf[MAX_PATH__];
-					snprintf(tmp_sdf, MAX_PATH__, "/tmp/flexaid_lig_%d.sdf",
-					         rand() % 900000 + 100000);
-					// TODO: BonMol::write_sdf(tmp_sdf) when 3D conformer gen is added
-					fprintf(stderr, "WARNING: SMILES input has no 3D coordinates.\n");
-					fprintf(stderr, "         Generate conformers first (e.g. RDKit Python)\n");
-					fprintf(stderr, "         then provide an SDF or MOL2 file.\n");
+				// Build 3D coordinates from topology
+				printf("Building 3D coordinates from SMILES topology...\n");
+				bonmol::CoordBuilderOptions cb_opts;
+				if (!bonmol::build_3d_coords(result.mol, cb_opts)) {
+					fprintf(stderr, "ERROR: Failed to generate 3D coordinates from SMILES.\n");
 					Terminate(2);
-				} else {
-					fprintf(stderr, "ERROR: SMILES input requires 3D coordinates for docking.\n");
-					fprintf(stderr, "       Provide an SDF or MOL2 file with 3D coords instead.\n");
+				}
+
+				printf("ProcessLigand (SMILES): %d atoms, %d rings (%d aromatic), "
+				       "%d rotatable bonds, MW=%.1f\n",
+				       result.num_heavy_atoms, result.num_rings,
+				       result.num_arom_rings, result.num_rot_bonds,
+				       result.molecular_weight);
+
+				// Write temporary MOL2 from BonMol and read back through standard path
+				char tmp_mol2[MAX_PATH__];
+				snprintf(tmp_mol2, MAX_PATH__, "/tmp/flexaid_smiles_%d.mol2",
+				         rand() % 900000 + 100000);
+
+				{
+					FILE* fp = fopen(tmp_mol2, "w");
+					if (!fp) {
+						fprintf(stderr, "ERROR: Cannot write temp MOL2 for SMILES ligand.\n");
+						Terminate(2);
+					}
+
+					const auto& m = result.mol;
+					int na = m.num_atoms();
+					int nb = m.num_bonds();
+
+					fprintf(fp, "@<TRIPOS>MOLECULE\nLIG\n%d %d 1 0 0\nSMALL\nNO_CHARGES\n\n", na, nb);
+
+					// Map SYBYL type codes to strings
+					auto sybyl_str = [](int t) -> const char* {
+						switch (t) {
+							case 1:  return "C.3";
+							case 2:  return "C.2";
+							case 3:  return "C.ar";
+							case 4:  return "N.3";
+							case 5:  return "N.2";
+							case 6:  return "N.ar";
+							case 7:  return "N.am";
+							case 8:  return "N.pl3";
+							case 9:  return "N.4";
+							case 10: return "O.3";
+							case 11: return "O.2";
+							case 12: return "O.co2";
+							case 13: return "F";
+							case 14: return "Cl";
+							case 15: return "Br";
+							case 16: return "S.3";
+							case 17: return "S.2";
+							case 18: return "S.O";
+							case 19: return "S.O2";
+							case 20: return "P.3";
+							case 21: return "I";
+							case 22: return "H";
+							default: return "Du";
+						}
+					};
+
+					// Element symbol from enum
+					auto elem_str = [](bonmol::Element e) -> const char* {
+						switch (e) {
+							case bonmol::Element::H:  return "H";
+							case bonmol::Element::C:  return "C";
+							case bonmol::Element::N:  return "N";
+							case bonmol::Element::O:  return "O";
+							case bonmol::Element::F:  return "F";
+							case bonmol::Element::P:  return "P";
+							case bonmol::Element::S:  return "S";
+							case bonmol::Element::Cl: return "Cl";
+							case bonmol::Element::Br: return "Br";
+							case bonmol::Element::I:  return "I";
+							default: return "X";
+						}
+					};
+
+					fprintf(fp, "@<TRIPOS>ATOM\n");
+					for (int i = 0; i < na; i++) {
+						fprintf(fp, "%6d %4s %9.4f %9.4f %9.4f %6s %3d LIG %8.4f\n",
+						        i + 1,
+						        elem_str(m.atoms[i].element),
+						        m.coords(0, i), m.coords(1, i), m.coords(2, i),
+						        sybyl_str(m.atoms[i].sybyl_type),
+						        1,
+						        m.atoms[i].partial_charge);
+					}
+
+					fprintf(fp, "@<TRIPOS>BOND\n");
+					for (int i = 0; i < nb; i++) {
+						const char* bt = "1";
+						switch (m.bonds[i].order) {
+							case bonmol::BondOrder::SINGLE:   bt = "1"; break;
+							case bonmol::BondOrder::DOUBLE:   bt = "2"; break;
+							case bonmol::BondOrder::TRIPLE:   bt = "3"; break;
+							case bonmol::BondOrder::AROMATIC: bt = "ar"; break;
+						}
+						fprintf(fp, "%6d %5d %5d %s\n",
+						        i + 1, m.bonds[i].atom_i + 1, m.bonds[i].atom_j + 1, bt);
+					}
+
+					fclose(fp);
+				}
+
+				// Read the generated MOL2 through the standard FlexAID reader
+				printf("read ligand MOL2 (from SMILES) <%s>\n", tmp_mol2);
+				lig_ok = read_mol2_ligand(FA, &atoms, &residue, tmp_mol2);
+				remove(tmp_mol2);
+
+				if (!lig_ok) {
+					fprintf(stderr, "ERROR: Failed to process SMILES-derived ligand.\n");
 					Terminate(2);
 				}
 			} else {
