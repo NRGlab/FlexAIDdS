@@ -56,8 +56,6 @@ void BindingPopulation::Entropize()
 
 int BindingPopulation::get_Population_size() { return this->BindingModes.size(); }
 
-const BindingMode& BindingPopulation::get_binding_mode(int index) const { return this->BindingModes.at(index); }
-BindingMode& BindingPopulation::get_binding_mode(int index) { return this->BindingModes.at(index); }
 
 
 const BindingMode& BindingPopulation::get_binding_mode(int index) const
@@ -186,13 +184,6 @@ statmech::StatMechEngine BindingPopulation::get_super_cluster_ensemble() const
 double BindingPopulation::get_shannon_entropy() const
 {
 	if (shannon_cache_valid_)
-		return shannonS_population_;
-
-	if (BindingModes.empty())
-/// === Population-level Shannon entropy ===
-double BindingPopulation::get_shannon_entropy() const
-{
-	if (shannon_cache_valid_)
 	{
 		return shannonS_population_;
 	}
@@ -254,15 +245,6 @@ double BindingPopulation::get_shannon_entropy() const
 }
 
 
-std::vector<std::vector<double>> BindingPopulation::get_deltaG_matrix() const
-{
-	const std::size_t n = BindingModes.size();
-	std::vector<std::vector<double>> matrix(n, std::vector<double>(n, 0.0));
-	for (std::size_t i = 0; i < n; ++i)
-		for (std::size_t j = 0; j < n; ++j)
-			if (i != j)
-				matrix[i][j] = compute_delta_G(BindingModes[i], BindingModes[j]);
-/// === ΔG matrix between all pairs of binding modes ===
 std::vector<std::vector<double>> BindingPopulation::get_deltaG_matrix() const
 {
 	int n = static_cast<int>(this->BindingModes.size());
@@ -421,7 +403,6 @@ std::vector<statmech::WHAMBin> BindingMode::free_energy_profile(
 
 int BindingMode::get_BindingMode_size() const { return this->Poses.size(); }
 
-const Pose& BindingMode::get_pose(int index) const { return this->Poses.at(index); }
 
 
 const Pose& BindingMode::get_pose(int index) const

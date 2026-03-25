@@ -782,8 +782,8 @@ if(BUILD_TESTING)
         tests/test_hardware_detect_dispatch.cpp
         LIB/hardware_detect.cpp
         LIB/hardware_dispatch.cpp
-        LIB/statmech.cpp)
-        LIB/TurboQuant.cpp
+        LIB/statmech.cpp
+        LIB/TurboQuant.cpp)
     target_include_directories(test_hardware_detect_dispatch PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
     target_link_libraries(test_hardware_detect_dispatch PRIVATE GTest::gtest GTest::gtest_main)
@@ -1329,12 +1329,11 @@ flexaids_configure_simd(test_cavity_detect)
     target_include_directories(test_ion_handling PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/LIB)
     target_link_libraries(test_ion_handling PRIVATE GTest::gtest GTest::gtest_main)
     if(MSVC)
-        target_compile_options(test_fast_optics PRIVATE /O2)
+        target_compile_options(test_ion_handling PRIVATE /O2)
     else()
-        target_compile_options(test_fast_optics PRIVATE -O2)
+        target_compile_options(test_ion_handling PRIVATE -O2)
     endif()
-    flexaids_configure_msvc_test(test_fast_optics)
-    add_test(NAME FastOPTICSTests COMMAND test_fast_optics)
+    add_test(NAME IonHandlingTests COMMAND test_ion_handling)
 
     # test_entropy_ga — SMFREE fitness model, Boltzmann blending, entropy fields
     add_executable(test_entropy_ga

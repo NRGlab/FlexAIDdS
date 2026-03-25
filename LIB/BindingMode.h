@@ -148,9 +148,7 @@ class BindingPopulation
 
 		 	// ═══ POPULATION-LEVEL SHANNON ENTROPY ═══
 		 	/// Shannon configurational entropy across all binding modes: S = -kB * sum(p_i * ln(p_i))
-		 	double	get_shannon_entropy() const;
 		 	/// ΔG matrix between all pairs of binding modes (upper triangle, row-major)
-		 	std::vector<std::vector<double>> get_deltaG_matrix() const;
 
 	protected:
 		double PartitionFunction;	// sum of all Boltzmann_weight (DEPRECATED: use StatMechEngine)

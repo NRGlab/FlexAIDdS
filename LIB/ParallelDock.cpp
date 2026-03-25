@@ -58,7 +58,7 @@ ParallelDockManager::RegionWorkspace ParallelDockManager::create_workspace() con
     ws.vc = *VC_;
 
     // Deep copy mutable arrays
-    ws.atoms_copy.assign(atoms_, atoms_ + FA_->num_atm);
+    ws.atoms_copy.assign(atoms_, atoms_ + FA_->atm_cnt);
     ws.residue_copy.assign(residue_, residue_ + FA_->res_cnt + 1);
 
     return ws;
