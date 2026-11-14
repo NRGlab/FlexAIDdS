@@ -14,8 +14,11 @@ on:
       - 'tests/test_site_publish_scripts.py'
       - '.github/workflows/update-site.yml'
       - '.github/workflows/pages.yml'
-  schedule:
-    - cron: '0 6 * * *'    # Daily 06:00 UTC
+  # schedule disabled 2026-11-13: this fork has no gh-pages branch, so the daily
+  # run failed every day ("couldn't find remote ref gh-pages"). LeBonhommePharma/FlexAIDdS
+  # is the real publisher. Run by hand via workflow_dispatch if needed.
+  # schedule:
+  #   - cron: '0 6 * * *'    # Daily 06:00 UTC
   workflow_dispatch:
 
 concurrency:
